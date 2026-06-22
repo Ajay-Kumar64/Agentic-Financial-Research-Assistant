@@ -29,37 +29,45 @@ Need an agent orchestration framework that supports conditional routing, explici
 ```python
 workflow = StateGraph(AgentState)
 
-# 8 nodes: memory_resolver, planner, 4 tools, guardrail_check, final_answer
+# 11 nodes: memory_resolver, planner, 6 tools, guardrail_check, final_answer, human_review
 workflow.add_node("memory_resolver", memory_resolver_node)
 workflow.add_node("planner", planner_node)
 workflow.add_node("rag_search", rag_search_node)
 workflow.add_node("financial_calculator", financial_calculator_node)
 workflow.add_node("document_comparator", document_comparator_node)
 workflow.add_node("web_search", web_search_node)
+workflow.add_node("yahoo_finance", yahoo_finance_node)
+workflow.add_node("portfolio_analyzer", portfolio_analyzer_node)
 workflow.add_node("guardrail_check", guardrail_check_node)
 workflow.add_node("final_answer", final_answer_node)
+workflow.add_node("human_review", human_review_node)
 
 # Conditional edges: planner -> tool based on LLM decision
 workflow.add_conditional_edges("planner", routing_condition, {
     "rag_search": "rag_search",
     "financial_calculator": "financial_calculator",
+    "yahoo_finance": "yahoo_finance",
+    "portfolio_analyzer": "portfolio_analyzer",
     ...
 })
 
 # After every tool -> guardrail_check -> back to planner or final_answer
 workflow.add_edge("rag_search", "guardrail_check")
 workflow.add_edge("financial_calculator", "guardrail_check")
+workflow.add_edge("yahoo_finance", "guardrail_check")
+workflow.add_edge("portfolio_analyzer", "guardrail_check")
 ...
 workflow.add_conditional_edges("guardrail_check", lambda state: state.get("next_step"), {
     "planner": "planner",
     "final_answer": "final_answer",
+    "human_review": "human_review",
 })
 ```
 
 ### Impact
 
 - **Interview defensibility**: Can draw the state machine on a whiteboard; explain exactly why guardrails are between tool execution and next planning step
-- **Debugging**: Every step is a named node with explicit inputs/outputs; trace logs show planner->rag_search->guardrail_check->planner->financial_calculator
+- **Debugging**: Every step is a named node with explicit inputs/outputs; trace logs show planner->yahoo_finance->guardrail_check->final_answer
 - **Testing**: Can unit-test each node independently; mock state transitions
 - **Guardrails**: Budget checks run after every tool call, not just at the end — prevents runaway loops
 
@@ -306,12 +314,24 @@ async def calculate_financial_metric(expression: str) -> dict:
     """Perform safe financial calculations."""
     result = calc_tool.run(expression)
     return {"result": result.get("result"), "formula": expression}
+
+@mcp.tool()
+async def get_stock_quote(ticker: str) -> dict:
+    """Fetch live stock quote from Yahoo Finance."""
+    result = yahoo_finance_tool.run(ticker=ticker, operation="quote")
+    return {"quote": result.result_data if result.success else None}
+
+@mcp.tool()
+async def analyze_portfolio(tickers: str, weights: str = None) -> dict:
+    """Analyze portfolio risk and return metrics."""
+    result = portfolio_analyzer_tool.run(tickers=tickers, weights=weights)
+    return {"portfolio": result.result_data if result.success else None}
 ```
 
 ### Impact
 
-- **Sarvam interview**: "I exposed my RAG as an MCP server - any agent connects via JSON-RPC 2.0" -> instant hire signal
-- **Decoupling**: LangGraph agent, CrewAI agent, or Claude Desktop can all use the same RAG tool without code changes
+- **Sarvam interview**: "I exposed my RAG and financial tools as an MCP server - any agent connects via JSON-RPC 2.0" -> instant hire signal
+- **Decoupling**: LangGraph agent, CrewAI agent, or Claude Desktop can all use the same tools without code changes
 - **Schema enforcement**: MCP auto-generates tool schemas from Python type hints - no manual OpenAPI spec
 
 ### What Breaks If We Chose Direct Function Call
@@ -713,7 +733,13 @@ Return ONLY a JSON object with this exact schema:
 }"""
 
     def _run(self, doc_a: str, doc_b: str, metric: str):
-        prompt = f"Compare the following two sources on the dimension: '{metric}'.\n\nSOURCE A:\n{doc_a[:1500]}\n\nSOURCE B:\n{doc_b[:1500]}"
+        prompt = f"Compare the following two sources on the dimension: '{metric}'.
+
+SOURCE A:
+{doc_a[:1500]}
+
+SOURCE B:
+{doc_b[:1500]}"
         response_text, tokens = call_llm_sync(prompt, self.COMPARISON_SYSTEM_PROMPT, temperature=0.0)
         # Parse JSON with regex fallback
         clean = re.sub(r"```json\s*|\s*```", "", response_text).strip()
@@ -826,7 +852,7 @@ Financial research involves multiple domains: monetary policy, banking regulatio
 
 | Option | Description | Pros | Cons |
 |--------|-------------|------|------|
-| **A. Single Agent (chosen)** | One agent with 4 generalist tools | Simpler; faster to build; sufficient for RBI document scope; interview-defensible as MVP | Cannot specialize; one planner bottleneck; all tools compete for context window |
+| **A. Single Agent (chosen)** | One agent with 6 generalist tools | Simpler; faster to build; sufficient for RBI document scope; interview-defensible as MVP | Cannot specialize; one planner bottleneck; all tools compete for context window |
 | **B. A2A (Agent-to-Agent) Protocol** (future) | Google's A2A: specialist agents (PolicyAgent, BankingAgent, MarketAgent) coordinated by an OrchestratorAgent | Each agent has focused tools; parallel domain processing; enterprise auditability; Google's 2026 standard | Complex orchestration; latency adds up; requires inter-agent state passing; overkill for demo |
 | **C. CrewAI Teams** (rejected) | Role-based teams with manager agent | Popular pattern; good for task decomposition | A2A is becoming the industry standard; CrewAI teams lack protocol-level interoperability |
 
@@ -949,7 +975,7 @@ As tool count grows, sequential execution becomes a bottleneck. A query that nee
 | **A. Async parallel super-node** (chosen as design target) | Independent tool nodes execute concurrently via `asyncio.gather`; partial state updates are merged | Cuts latency by ~40% when multiple tools are needed; event-loop friendly; scalable to 10+ tools | Requires all tool nodes to be `async def`; state merge logic must handle key collisions; harder to debug race conditions |
 | **B. Sequential edges** (current) | LangGraph edges run one node at a time | Simple; deterministic; no merge logic; easy to trace | Latency is sum of all node latencies; 3 tools x 2s = 6s; violates 8s guardrail for complex queries |
 | **C. ThreadPoolExecutor** (rejected) | Run blocking tool calls in threads | Works with sync code; no async refactor needed | GIL-bound for CPU tools; thread overhead; not truly concurrent for I/O; harder to manage with LangGraph state |
-| **D. Ray/Dask distributed** (rejected) | Distributed task framework for massive parallelism | Scales to 100+ tools; production-grade | Overkill for 4 tools; adds cluster infra; 5-minute setup vs 5-minute benefit |
+| **D. Ray/Dask distributed** (rejected) | Distributed task framework for massive parallelism | Scales to 100+ tools; production-grade | Overkill for 6 tools; adds cluster infra; 5-minute setup vs 5-minute benefit |
 
 ### Decision: A as the target architecture; B for current stability
 
@@ -986,7 +1012,7 @@ async def run_tools_parallel(
 
 ### Migration Path from Current Sync Graph
 
-1. Convert `rag_search_node`, `web_search_node`, and `financial_calculator_node` to `async def`
+1. Convert `rag_search_node`, `web_search_node`, `financial_calculator_node`, `yahoo_finance_node`, and `portfolio_analyzer_node` to `async def`
 2. Replace the sequential `planner -> tool -> guardrail_check` edges with a parallel super-node when the planner requests multiple independent tools
 3. Keep `document_comparator_node` sequential (it depends on RAG output)
 
@@ -1119,7 +1145,8 @@ workflow.add_node("human_review", human_review_node)  # NEW: Human-in-the-loop
 # ... existing edges ...
 workflow.add_edge("rag_search", "guardrail_check")
 workflow.add_edge("financial_calculator", "guardrail_check")
-workflow.add_edge("document_comparator", "guardrail_check")
+workflow.add_edge("yahoo_finance", "guardrail_check")
+workflow.add_edge("portfolio_analyzer", "guardrail_check")
 workflow.add_edge("web_search", "guardrail_check")
 
 workflow.add_conditional_edges(
@@ -1161,5 +1188,240 @@ workflow.add_edge("final_answer", END)
 
 ---
 
-*Total decisions: 17*  
+## D18: Yahoo Finance Integration — Live Market Data
+
+**Status:** Accepted
+**Owner:** Tools
+
+### Context
+
+The agent needs to answer live stock market queries (e.g., "What is the price of RELIANCE.NS?"). The question is which data provider to use and how to integrate it into the LangGraph state machine.
+
+### Options Considered
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| **A. yfinance (yfinance library)** (chosen) | Free Python library wrapping Yahoo Finance API | No API key needed; supports Indian NSE/BSE via `.NS` suffix; rich data (price, history, fundamentals); battle-tested | Yahoo rate limits for heavy use; no real-time tick data (15-min delay); dependency on Yahoo's uptime |
+| **B. Alpha Vantage** (rejected) | REST API for stock data | Real-time data; official API; structured JSON | Requires API key; 5 calls/min on free tier; not sufficient for demo scale |
+| **C. IEX Cloud** (rejected) | Professional market data API | High-quality real-time data; enterprise-grade | Paid tier required; expensive for demo; no Indian exchange support |
+| **D. Mock stock data** (rejected) | Return hardcoded prices for demo | Instant; no network dependency; never fails | Not defensible in interview; cannot answer "What is the current price?" truthfully; breaks evals |
+
+### Decision: A. yfinance
+
+### Implementation
+
+```python
+import yfinance as yf
+from agent.tools.base import BaseTool, ToolResult
+
+class YahooFinanceTool(BaseTool):
+    def _run(self, ticker: str, operation: str = "quote", period: str = "1y") -> dict:
+        stock = yf.Ticker(ticker.upper().strip())
+        info = stock.info
+
+        if operation == "quote":
+            return {
+                "ticker": ticker.upper(),
+                "name": info.get("longName", "N/A"),
+                "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
+                "currency": info.get("currency", "USD"),
+                "market_cap": info.get("marketCap"),
+                "pe_ratio": info.get("trailingPE"),
+                "52_week_high": info.get("fiftyTwoWeekHigh"),
+                "52_week_low": info.get("fiftyTwoWeekLow"),
+                "sector": info.get("sector"),
+            }
+        elif operation == "history":
+            hist = stock.history(period=period)
+            return {
+                "ticker": ticker.upper(),
+                "period": period,
+                "latest_close": round(hist["Close"].iloc[-1], 2),
+                "period_high": round(hist["High"].max(), 2),
+                "period_low": round(hist["Low"].min(), 2),
+                "avg_volume": int(hist["Volume"].mean()),
+            }
+        elif operation == "returns":
+            hist = stock.history(period=period)
+            daily_returns = hist["Close"].pct_change().dropna()
+            total_return = (hist["Close"].iloc[-1] / hist["Close"].iloc[0] - 1) * 100
+            volatility = daily_returns.std() * (252 ** 0.5) * 100
+            return {
+                "ticker": ticker.upper(),
+                "period": period,
+                "total_return_pct": round(total_return, 2),
+                "annualized_volatility_pct": round(volatility, 2),
+            }
+        elif operation == "fundamentals":
+            return {
+                "ticker": ticker.upper(),
+                "revenue": info.get("totalRevenue"),
+                "profit_margins": info.get("profitMargins"),
+                "debt_to_equity": info.get("debtToEquity"),
+                "return_on_equity": info.get("returnOnEquity"),
+                "dividend_yield": info.get("dividendYield"),
+                "beta": info.get("beta"),
+            }
+```
+
+### Graph Integration
+
+```python
+# Fast-Path 7: Stock / market data query -> yahoo_finance
+stock_keywords = ["stock price", "share price", "market cap", "pe ratio", "ticker", "nifty", "sensex",
+                  "returns", "volatility", "52 week", "dividend", "beta", "fundamental"]
+if any(k in query_lower for k in stock_keywords) and "yahoo_finance" not in tools_used:
+    return {"next_step": "yahoo_finance", ...}
+```
+
+### Impact
+
+- **Interview defense**: "My agent can fetch live stock data for Indian and US equities via Yahoo Finance integration"
+- **User value**: Answers "What is RELIANCE.NS trading at?" with real data instead of "I only have RBI reports"
+- **Zero cost**: No API key required; free tier covers demo usage
+- **Deterministic routing**: Fast-path keyword detection routes stock queries directly to yahoo_finance without LLM deliberation
+
+### What Breaks If We Chose Alpha Vantage
+
+| Scenario | Alpha Vantage | yfinance |
+|----------|-------------|----------|
+| Demo setup | "Sign up for API key, add to .env" -> friction | `pip install yfinance` -> works immediately |
+| Rate limits | 5 calls/min -> throttled on multi-stock portfolio queries | No explicit rate limits for basic usage |
+| Indian exchanges | Limited NSE support | Full `.NS` suffix support via Yahoo |
+| Cost | $0 on free tier but limited | Completely free |
+
+### What Breaks If We Chose Mock Data
+
+| Interview Question | Mock Answer | Real Data Answer |
+|-------------------|-------------|------------------|
+| "How does your agent handle live stock queries?" | "It returns hardcoded numbers" -> reject | "It fetches real-time data from Yahoo Finance via yfinance" -> accept |
+| "What is the price of RELIANCE.NS?" | "₹2,500 (hardcoded)" -> wrong if market moved | "₹2,847.50 (live)" -> correct |
+| "Can it analyze portfolios?" | "No, it only has mock single-stock data" -> limited | "Yes, it fetches historical data and computes Sharpe ratio, volatility, and drawdown" -> comprehensive |
+
+---
+
+## D19: Portfolio Analyzer — Multi-Asset Risk Metrics
+
+**Status:** Accepted
+**Owner:** Tools
+
+### Context
+
+Users want to analyze multi-stock portfolios (e.g., "What is the Sharpe ratio of 40% RELIANCE, 30% INFY, 30% HDFCBANK?"). The question is whether to build a dedicated tool or rely on the calculator.
+
+### Options Considered
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| **A. Dedicated PortfolioAnalyzerTool** (chosen) | Custom tool that downloads historical data, computes portfolio-level Sharpe ratio, volatility, max drawdown, and per-asset contributions | Handles portfolio math correctly (covariance, weighted returns); produces structured output; interview-defensible | More code; requires yfinance for historical data; assumes equal weighting if not specified |
+| **B. Financial Calculator** (rejected) | Use existing calculator with custom expressions | Reuses existing tool; no new code | Cannot handle covariance between assets; requires user to input complex matrix math; no structured portfolio output |
+| **C. External API (PortfolioAnalytics)** (rejected) | Call external portfolio analysis API | Professional-grade analytics; no code maintenance | Requires API key; expensive; network dependency; not interview-defensible as "built" |
+| **D. Mock portfolio metrics** (rejected) | Return hardcoded Sharpe ratios for common portfolios | Instant; no network dependency | Not defensible; cannot handle custom portfolios; breaks on novel tickers |
+
+### Decision: A. Dedicated PortfolioAnalyzerTool with yfinance backend
+
+### Implementation
+
+```python
+import yfinance as yf
+import numpy as np
+import pandas as pd
+from agent.tools.base import BaseTool, ToolResult
+
+class PortfolioAnalyzerTool(BaseTool):
+    def _run(self, tickers: str, weights: str = None, period: str = "1y", risk_free_rate: float = 0.05) -> dict:
+        ticker_list = [t.strip().upper() for t in tickers.split(",")]
+        if not ticker_list or len(ticker_list) < 2:
+            raise ValueError("Need at least 2 tickers")
+
+        # Parse weights (equal if None)
+        if weights:
+            weight_list = [float(w.strip()) for w in weights.split(",")]
+            if len(weight_list) != len(ticker_list):
+                raise ValueError("Weights count must match tickers count")
+            if abs(sum(weight_list) - 1.0) > 0.01:
+                raise ValueError("Weights must sum to 1.0")
+        else:
+            weight_list = [1.0 / len(ticker_list)] * len(ticker_list)
+
+        # Download historical data
+        data = yf.download(ticker_list, period=period, progress=False, auto_adjust=True)
+        closes = data["Close"]
+        closes = closes.dropna()
+
+        returns = closes.pct_change().dropna()
+        weights_arr = np.array(weight_list)
+        portfolio_returns = returns.dot(weights_arr)
+
+        # Sharpe Ratio
+        excess_returns = portfolio_returns - (risk_free_rate / 252)
+        sharpe_ratio = excess_returns.mean() / excess_returns.std() * np.sqrt(252)
+
+        # Annualized metrics
+        annualized_return = portfolio_returns.mean() * 252 * 100
+        annualized_volatility = portfolio_returns.std() * np.sqrt(252) * 100
+
+        # Max Drawdown
+        cumulative = (1 + portfolio_returns).cumprod()
+        peak = cumulative.expanding(min_periods=1).max()
+        drawdown = (cumulative - peak) / peak
+        max_drawdown = drawdown.min() * 100
+
+        return {
+            "portfolio": {
+                "tickers": ticker_list,
+                "weights": [round(w, 2) for w in weight_list],
+                "sharpe_ratio": round(sharpe_ratio, 3),
+                "annualized_return_pct": round(annualized_return, 2),
+                "annualized_volatility_pct": round(annualized_volatility, 2),
+                "max_drawdown_pct": round(max_drawdown, 2),
+            },
+            "assets": {
+                t: {
+                    "weight": round(weight_list[i], 2),
+                    "annualized_return_pct": round(returns[t].mean() * 252 * 100, 2),
+                    "annualized_volatility_pct": round(returns[t].std() * np.sqrt(252) * 100, 2),
+                }
+                for i, t in enumerate(ticker_list)
+            },
+        }
+```
+
+### Graph Integration
+
+```python
+# Fast-Path 8: Portfolio / allocation / Sharpe query -> portfolio_analyzer
+portfolio_keywords = ["portfolio", "sharpe ratio", "allocation", "diversify", "risk adjusted",
+                      "max drawdown", "my holdings", "asset allocation"]
+if any(k in query_lower for k in portfolio_keywords) and "portfolio_analyzer" not in tools_used:
+    return {"next_step": "portfolio_analyzer", ...}
+```
+
+### Impact
+
+- **Interview defense**: "My agent has a dedicated portfolio analyzer that computes Sharpe ratio, volatility, and max drawdown from historical data"
+- **User value**: Answers "Should I diversify into INFY?" with data-driven risk metrics instead of generic advice
+- **Structured output**: Returns JSON with portfolio-level and per-asset metrics; renderable as tables in Streamlit
+- **Validation**: Rejects single-ticker portfolios and weights that don't sum to 1.0
+
+### What Breaks If We Used the Calculator Instead
+
+| Scenario | Calculator | PortfolioAnalyzer |
+|----------|-----------|-------------------|
+| "Sharpe of 40% RELIANCE, 30% INFY, 30% HDFCBANK" | User must write `sharpe_ratio(...)` expression; no covariance handling | Tool handles everything; returns structured JSON |
+| "What is my portfolio volatility?" | Requires manual variance-covariance matrix input | Automatic from historical data |
+| "Compare two portfolios" | Cannot compare; no structured output | Can run twice and compare metrics side-by-side |
+| Interview: "How do you analyze portfolios?" | "I use the calculator" -> weak | "I built a dedicated tool that downloads historical data and computes risk-adjusted metrics" -> strong |
+
+### What Breaks If We Chose Mock Data
+
+| Scenario | Mock | Real Data |
+|----------|------|-----------|
+| "Analyze 40% RELIANCE, 30% INFY, 30% HDFCBANK" | Returns hardcoded Sharpe of 1.2 | Computes actual Sharpe from 1-year historical data |
+| Novel tickers (e.g., TATAMOTORS.NS) | No mock data available | yfinance fetches real data |
+| "What if I change weights to 50/50?" | Same hardcoded result | Recalculates with new weights |
+
+---
+
+*Total decisions: 19*  
 *Next review: After production deployment or major architecture change*
