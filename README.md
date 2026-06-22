@@ -4,11 +4,11 @@
 
 ## Architecture
 
-
-diagram = '''graph LR
+```mermaid
+graph LR
     Start([User Query]) --> Memory[memory_resolver]
     Memory --> Planner[planner]
-    
+
     Planner -->|rag_search| RAG[rag_search<br/>BM25+FAISS+RRF]
     Planner -->|financial_calculator| Calc[financial_calculator<br/>Safe AST Eval]
     Planner -->|document_comparator| Comp[document_comparator<br/>Gemini-based]
@@ -16,27 +16,24 @@ diagram = '''graph LR
     Planner -->|yahoo_finance| YF[yahoo_finance<br/>Live Stock Data]
     Planner -->|portfolio_analyzer| PA[portfolio_analyzer<br/>Sharpe & Risk]
     Planner -->|final_answer| Final[final_answer]
-    
+
     RAG --> Guard[guardrail_check]
     Calc --> Guard
     Comp --> Guard
     Web --> Guard
     YF --> Guard
     PA --> Guard
-    
+
     Guard -->|continue| Planner
     Guard -->|respond| Final
     Guard -->|human_review| Human[human_review<br/>Enterprise HITL]
-    
+
     Human --> End([END])
     Final --> End
-    
+
     Note["Built on LangChain + LangGraph"]
-    style Note fill:#e1f5fe,stroke:#01579b,stroke-width:2px'''
-
-print(diagram)
-
-
+    style Note fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+```
 
 ## Key Features
 
