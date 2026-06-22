@@ -16,7 +16,7 @@ build/
 .env
 .env.local
 
-.Erros_and_Debug.md
+
 # IDE
 .idea/
 .vscode/
@@ -41,3 +41,4 @@ Thumbs.db
 
 # Docker
 *.pid
+Erros_and_Debug.md
