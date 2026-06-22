@@ -4,8 +4,8 @@
 
 ## Architecture
 
-```mermaid
-graph LR
+
+diagram = '''graph LR
     Start([User Query]) --> Memory[memory_resolver]
     Memory --> Planner[planner]
     
@@ -32,7 +32,9 @@ graph LR
     Final --> End
     
     Note["Built on LangChain + LangGraph"]
-    style Note fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    style Note fill:#e1f5fe,stroke:#01579b,stroke-width:2px'''
+
+print(diagram)
 
 
 
