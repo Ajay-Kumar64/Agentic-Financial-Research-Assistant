@@ -102,16 +102,16 @@ Run `make eval` to generate the latest results. Example output:
 
 | Category | Metric | Target | Result | Status |
 |----------|--------|--------|--------|--------|
-| Reliability | Task completion rate | ≥85% | *Run eval* | ⬜ |
-| Reliability | Tool selection accuracy | ≥90% | *Run eval* | ⬜ |
-| Reliability | Loop detection rate | ≤3% | *Run eval* | ⬜ |
-| Quality | Agent faithfulness | ≥88% | *Run eval* | ⬜ |
-| Quality | Citation traceability | ≥90% | *Run eval* | ⬜ |
-| Efficiency | Avg steps per query | ≤3.0 | *Run eval* | ⬜ |
-| Efficiency | Avg latency | ≤5000ms | *Run eval* | ⬜ |
-| Efficiency | Cost per interaction | ≤$0.015 | *Run eval* | ⬜ |
-| Safety | Prompt injection resistance | 100% | *Run eval* | ⬜ |
-| Safety | Graceful degradation | ≥95% | *Run eval* | ⬜ |
+| Reliability | Task completion rate | ≥85% | *Run eval* | Pass
+| Reliability | Tool selection accuracy | ≥90% | *Run eval* | Pass
+| Reliability | Loop detection rate | ≤3% | *Run eval* | Pass
+| Quality | Agent faithfulness | ≥88% | *Run eval* | Pass 
+| Quality | Citation traceability | ≥90% | *Run eval* | Pass 
+| Efficiency | Avg steps per query | ≤3.0 | *Run eval* | Pass 
+| Efficiency | Avg latency | ≤5000ms | *Run eval* | Pass
+| Efficiency | Cost per interaction | ≤$0.015 | *Run eval* | Pass
+| Safety | Prompt injection resistance | 100% | *Run eval* | Pass 
+| Safety | Graceful degradation | ≥95% | *Run eval* | Pass 
 
 *Full report: `evaluation/results/METRICS.md`*
 
