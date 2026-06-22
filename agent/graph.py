@@ -2,6 +2,7 @@ import json
 import os
 import re
 import time
+import asyncio
 from langgraph.graph import StateGraph, END
 from agent.state import AgentState
 from agent.llm_provider import call_llm_sync
@@ -12,6 +13,21 @@ from agent.tools.calculator import calc_tool
 from agent.tools.comparator import DocumentComparatorTool
 from agent.tools.web_search import WebSearchTool
 from agent.tools.memory import memory_tool
+
+# =============================================================================
+# LANGSMITH TRACING (Step 1: Production Observability)
+# =============================================================================
+try:
+    from langsmith import traceable
+
+    _LANGSMITH_AVAILABLE = True
+except ImportError:
+    _LANGSMITH_AVAILABLE = False
+    print("[LangSmith] langsmith not installed. Run: pip install langsmith")
+
+# Enable tracing if env var is set
+os.environ.setdefault("LANGSMITH_TRACING", "true")
+os.environ.setdefault("LANGSMITH_PROJECT", "agentic-financial-assistant")
 
 rag_tool = RagSearchTool()
 comp_tool = DocumentComparatorTool()
@@ -124,7 +140,34 @@ def memory_resolver_node(state: AgentState) -> dict:
 
 
 # =============================================================================
-# GUARDRAIL CHECK NODE
+# HUMAN REVIEW NODE (Step 3: Enterprise Human-in-the-Loop)
+# =============================================================================
+def human_review_node(state: AgentState) -> dict:
+    """
+    Human-in-the-loop checkpoint.
+    Triggered when agent confidence is critically low (< 0.4) after all fallbacks.
+    """
+    query = state.get("query", "")
+    print(f"[Human Review] Query flagged for human review: '{query[:60]}...'")
+
+    return {
+        "final_response": (
+            "I don't have enough reliable information to answer this question confidently. "
+            "This query has been flagged for human review. "
+            "Please contact a financial analyst or rephrase your question with more specific details."
+        ),
+        "steps_executed": state.get("steps_executed", []) + ["human_review"],
+        "tools_used": state.get("tools_used", []) + ["human_review"],
+        "guardrail_triggered": True,
+        "guardrail_reason": "low_confidence_human_review",
+        "confidence_score": state.get("confidence_score", 0.0),
+        "needs_clarification": True,
+        "task_complete": True,
+    }
+
+
+# =============================================================================
+# GUARDRAIL CHECK NODE (Updated for Human Review routing)
 # =============================================================================
 def guardrail_check_node(state: AgentState) -> dict:
     from agent.guardrails import check_guardrails
@@ -141,6 +184,23 @@ def guardrail_check_node(state: AgentState) -> dict:
             "next_step": "final_answer",
             "guardrail_reason": reason,
         }
+    elif decision == "continue":
+        # NEW: Critical low confidence + already tried web_search -> human review
+        confidence = state.get("confidence_score", 0.0)
+        tools_used = state.get("tools_used", [])
+        depth = state.get("tool_call_depth", 0)
+
+        if (confidence < 0.4
+                and "web_search" in tools_used
+                and depth >= 2
+                and "human_review" not in tools_used):
+            print(f"[Guardrail] Critical low confidence ({confidence:.2f}) after fallback -> routing to human_review")
+            return {
+                "next_step": "human_review",
+                "guardrail_triggered": True,
+                "guardrail_reason": "critical_low_confidence_human_review",
+            }
+        return {"next_step": "planner"}
     else:
         return {"next_step": "planner"}
 
@@ -148,7 +208,6 @@ def guardrail_check_node(state: AgentState) -> dict:
 # =============================================================================
 # PLANNER NODE
 # =============================================================================
-
 
 def planner_node(state: AgentState) -> dict:
     t0 = time.time()
@@ -784,7 +843,6 @@ def web_search_node(state: AgentState) -> dict:
         else:
             print(f"[WebSearch DEBUG] No results for query: {query[:60]}")
     except AttributeError as e:
-        # Tuple/dict mismatch in web_search.py — fix the tool, don't burn latency retrying
         print(f"[WebSearch DEBUG] Tool format error (tuple/dict mismatch): {e}")
         print(f"[WebSearch DEBUG] >>> FIX REQUIRED: Update agent/tools/web_search.py to handle tuple results <<<")
         results_text = "[Web search unavailable due to tool format error]"
@@ -800,7 +858,6 @@ def web_search_node(state: AgentState) -> dict:
         "steps_executed": state.get("steps_executed", []) + ["web_search"],
         "tools_used": state.get("tools_used", []) + ["web_search"],
         "tool_calls_count": state.get("tool_calls_count", 0) + 1,
-        # FIX: Store FULL result, not truncated to 200 chars
         "tool_outputs": state.get("tool_outputs", []) + [{"tool": "web_search", "result": results_text}],
         "retrieved_contexts": state.get("retrieved_contexts", []) + [results_text],
         "total_tokens_used": state.get("total_tokens_used", 0) + len(results_text.split()),
@@ -1019,7 +1076,7 @@ def final_answer_node(state: AgentState) -> dict:
 
 
 # =============================================================================
-# GRAPH CONSTRUCTION
+# GRAPH CONSTRUCTION (Updated with Human Review node)
 # =============================================================================
 workflow = StateGraph(AgentState)
 
@@ -1031,6 +1088,7 @@ workflow.add_node("document_comparator", document_comparator_node)
 workflow.add_node("web_search", web_search_node)
 workflow.add_node("guardrail_check", guardrail_check_node)
 workflow.add_node("final_answer", final_answer_node)
+workflow.add_node("human_review", human_review_node)  # NEW: Human-in-the-loop
 
 workflow.set_entry_point("memory_resolver")
 workflow.add_edge("memory_resolver", "planner")
@@ -1058,9 +1116,24 @@ workflow.add_conditional_edges(
     {
         "planner": "planner",
         "final_answer": "final_answer",
+        "human_review": "human_review",  # NEW: Route to human review
     }
 )
 
+workflow.add_edge("human_review", END)  # NEW: Human review ends the flow
 workflow.add_edge("final_answer", END)
 
 agent_brain = workflow.compile()
+
+# =============================================================================
+# LANGSMITH TRACEABLE WRAPPER (Step 1: Production Observability)
+# =============================================================================
+if _LANGSMITH_AVAILABLE:
+    @traceable(run_type="chain", name="agent_run", tags=["financial_agent", "v1"])
+    def run_agent_traced(state: AgentState) -> dict:
+        """LangSmith-traced wrapper for agent invocation."""
+        return agent_brain.invoke(state)
+else:
+    def run_agent_traced(state: AgentState) -> dict:
+        """Fallback wrapper without LangSmith."""
+        return agent_brain.invoke(state)

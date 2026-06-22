@@ -11,6 +11,7 @@ from typing import Dict, Any, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from langsmith import traceable
 
 from api.models import (
     ChatRequest,
@@ -254,7 +255,13 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
 
         # RUN AGENT
         print(f"[API] Starting agent for query: {request.message[:60]}...")
-        output_state = workflow_graph.invoke(initial_state)
+
+        @traceable(run_type="chain", name="agent_chat", tags=["financial_agent", "v1"])
+        def _run_agent(state):
+            return workflow_graph.invoke(state)
+
+        output_state = _run_agent(initial_state)
+
         print(f"[API] Agent completed. Keys in output: {list(output_state.keys())}")
 
         # Extract response safely
