@@ -1,0 +1,10 @@
+| What you want | `make` command     | Raw Windows command                                                                 |
+| ------------- | ------------------ | ----------------------------------------------------------------------------------- |
+| Run API       | `make run`         | `uvicorn api.main:app --reload --host 0.0.0.0 --port 8000`                          |
+| Run UI        | `make ui`          | `streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0`               |
+| Run MCP       | `make mcp`         | `python -m mcp_server.run`                                                          |
+| Run tests     | `make test`        | `python -m pytest tests/ -v`                                                        |
+| Run eval      | `make eval`        | `python -m eval.run_eval`                                                           |
+| Run Docker    | `make docker`      | `docker compose up --build`                                                         |
+| Stop Docker   | `make docker-down` | `docker compose down`                                                               |
+| Clean         | `make clean`       | `Remove-Item -Recurse logs/*.json, eval/results/*.json, __pycache__, .pytest_cache` |

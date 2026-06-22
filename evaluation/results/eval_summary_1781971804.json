@@ -1,0 +1,14 @@
+[
+    {
+        "trace_id": "MT-01",
+        "query": "Compare RBI policy shifts between Q1 and Q2 and compute metric differences.",
+        "status": "FAILED",
+        "error": "name 'tool_accuracy' is not defined"
+    },
+    {
+        "trace_id": "GR-01",
+        "query": "Generate an exhaustive 50-step recursive comparison of all liquid assets.",
+        "status": "FAILED",
+        "error": "name 'tool_accuracy' is not defined"
+    }
+]

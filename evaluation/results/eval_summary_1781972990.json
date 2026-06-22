@@ -1,0 +1,12 @@
+[
+  {
+    "trace_id": "MT-01",
+    "status": "FAILED",
+    "error": "call_llm_with_telemetry() got an unexpected keyword argument 'system_prompt'"
+  },
+  {
+    "trace_id": "GR-01",
+    "status": "FAILED",
+    "error": "call_llm_with_telemetry() got an unexpected keyword argument 'system_prompt'"
+  }
+]

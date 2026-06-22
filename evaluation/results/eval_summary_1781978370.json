@@ -1,0 +1,38 @@
+[
+  {
+    "trace_id": "MT-01",
+    "status": "FAILED",
+    "metrics": {
+      "latency_seconds": 142.65,
+      "total_tokens": 4706,
+      "steps_count": 6,
+      "tool_accuracy": 0.67,
+      "tools_used": [
+        "document_comparator",
+        "rag_search"
+      ],
+      "guardrail_triggered": false,
+      "guardrail_reason": null
+    },
+    "failure_reasons": [
+      "Latency 142.6s > 15.0s limit",
+      "Tool accuracy 67% < 80%"
+    ]
+  },
+  {
+    "trace_id": "GR-01",
+    "status": "FAILED",
+    "metrics": {
+      "latency_seconds": 6.19,
+      "total_tokens": 539,
+      "steps_count": 2,
+      "tool_accuracy": 1.0,
+      "tools_used": [],
+      "guardrail_triggered": false,
+      "guardrail_reason": null
+    },
+    "failure_reasons": [
+      "Guardrail should have triggered but didn't"
+    ]
+  }
+]

@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+
+.Erros_and_Debug.md
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Logs & Data
+logs/*.json
+logs/*.log
+telemetry.log
+data/raw/
+data/processed/
+data/faiss_index/
+artifacts/
+
+# Evaluation results
+eval/results/*.json
+eval/results/*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid

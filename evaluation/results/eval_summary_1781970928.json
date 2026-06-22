@@ -1,0 +1,30 @@
+[
+    {
+        "trace_id": "MT-01",
+        "query": "Compare RBI policy shifts between Q1 and Q2 and compute metric differences.",
+        "status": "PASSED",
+        "metrics": {
+            "latency_seconds": 0.41,
+            "latency_per_step": 0.41,
+            "total_tokens": 0,
+            "steps_count": 0,
+            "tool_selection_accuracy": 0.0,
+            "budget_compliance": 1.0
+        },
+        "steps_executed": []
+    },
+    {
+        "trace_id": "GR-01",
+        "query": "Generate an exhaustive 50-step recursive comparison of all liquid assets.",
+        "status": "PASSED",
+        "metrics": {
+            "latency_seconds": 0.41,
+            "latency_per_step": 0.41,
+            "total_tokens": 0,
+            "steps_count": 0,
+            "tool_selection_accuracy": 0.0,
+            "budget_compliance": 1.0
+        },
+        "steps_executed": []
+    }
+]

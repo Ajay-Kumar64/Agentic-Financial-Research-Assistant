@@ -1,0 +1,236 @@
+{
+  "version": "1.0",
+  "description": "20 golden test cases for agent evaluation",
+  "traces": [
+    {
+      "id": "ST-01",
+      "category": "single_turn_single_tool",
+      "query": "What was the repo rate maintained by RBI in the latest annual report?",
+      "expected_tools": ["rag_search"],
+      "expected_max_steps": 2,
+      "expected_answer_pattern": "repo|rate|6.5|accommodative|tightening",
+      "notes": "Simple factual retrieval. Should need exactly 1 RAG call + final_answer."
+    },
+    {
+      "id": "ST-02",
+      "category": "single_turn_single_tool",
+      "query": "What was RBI's GDP growth projection?",
+      "expected_tools": ["rag_search"],
+      "expected_max_steps": 2,
+      "expected_answer_pattern": "GDP|growth|projection|outlook",
+      "notes": "Factual retrieval with a number in the answer."
+    },
+    {
+      "id": "ST-03",
+      "category": "single_turn_single_tool",
+      "query": "What percentage increase is it from 4.0 to 6.5?",
+      "expected_tools": ["financial_calculator"],
+      "expected_max_steps": 2,
+      "expected_answer_pattern": "62.5",
+      "notes": "Pure calculation. Should NOT call RAG retriever."
+    },
+    {
+      "id": "ST-04",
+      "category": "single_turn_single_tool",
+      "query": "What is the CAGR if revenue grew from 1000 to 1500 over 3 years?",
+      "expected_tools": ["financial_calculator"],
+      "expected_max_steps": 2,
+      "expected_answer_pattern": "14.47|14.5",
+      "notes": "CAGR calculation. Tests calculator's named functions."
+    },
+    {
+      "id": "ST-05",
+      "category": "single_turn_single_tool",
+      "query": "What is the current inflation target framework mentioned by RBI?",
+      "expected_tools": ["rag_search"],
+      "expected_max_steps": 2,
+      "expected_answer_pattern": "inflation|target|CPI|band",
+      "notes": "Policy retrieval question."
+    },
+    {
+      "id": "SM-01",
+      "category": "single_turn_multi_tool",
+      "query": "What was the YoY change in RBI's GDP growth projection from last year to this year?",
+      "expected_tools": ["rag_search"],
+      "expected_max_steps": 4,
+      "expected_answer_pattern": "growth|change|projection|GDP",
+      "notes": "Two RAG calls (two years) + one calculation. Tests multi-hop."
+    },
+    {
+      "id": "SM-02",
+      "category": "single_turn_multi_tool",
+      "query": "Compare RBI's monetary policy stance in FY2022 versus FY2023.",
+      "expected_tools": ["rag_search", "document_comparator"],
+      "expected_max_steps": 4,
+      "expected_answer_pattern": "tightening|accommodative|neutral|comparison|policy",
+      "notes": "Two retrievals + comparison. Tests comparator tool."
+    },
+    {
+      "id": "SM-03",
+      "category": "single_turn_multi_tool",
+      "query": "How much did the repo rate increase between FY2022 and FY2023, and what percentage change is that?",
+      "expected_tools": ["rag_search", "financial_calculator"],
+      "expected_max_steps": 4,
+      "expected_answer_pattern": "\\d+.*basis|percentage|change",
+      "notes": "Retrieve + calculate. Tests RAG→calculator pipeline."
+    },
+    {
+      "id": "SM-04",
+      "category": "single_turn_multi_tool",
+      "query": "What are the key differences in RBI's approach to digital payments between FY2022 and FY2023?",
+      "expected_tools": ["rag_search", "document_comparator"],
+      "expected_max_steps": 4,
+      "expected_answer_pattern": "UPI|digital|payment|comparison",
+      "notes": "Multi-document comparison on a specific theme."
+    },
+    {
+      "id": "SM-05",
+      "category": "single_turn_multi_tool",
+      "query": "What is the ratio of non-performing assets to total assets mentioned in the latest report?",
+      "expected_tools": ["rag_search"],
+      "expected_max_steps": 3,
+      "expected_answer_pattern": "NPA|non.performing|ratio|asset",
+      "notes": "Retrieve data + compute ratio."
+    },
+    {
+      "id": "MT-01",
+      "category": "multi_turn",
+      "turns": [
+        {
+          "query": "What was the repo rate in FY2023?",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "repo|rate|policy"
+        },
+        {
+          "query": "And what about the previous year?",
+          "expected_resolved_query": "What was the repo rate in FY2022?",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "repo|rate|4.0|6.5"
+        },
+        {
+          "query": "What's the percentage increase between those two?",
+          "expected_resolved_query": "percentage increase from repo rate 4.0% to 6.5%",
+          "expected_tools": ["financial_calculator"],
+          "expected_answer_pattern": "62.5"
+        }
+      ],
+      "notes": "3-turn conversation testing coreference resolution across turns."
+    },
+    {
+      "id": "MT-02",
+      "category": "multi_turn",
+      "turns": [
+        {
+          "query": "What were RBI's key concerns about inflation?",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "inflation|price|CPI"
+        },
+        {
+          "query": "How did they address it?",
+          "expected_resolved_query": "How did RBI address inflation concerns?",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "rate|policy|measure"
+        }
+      ],
+      "notes": "2-turn conversation with pronoun resolution."
+    },
+    {
+      "id": "MT-03",
+      "category": "multi_turn",
+      "turns": [
+        {
+          "query": "Tell me about the banking sector's NPA situation.",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "NPA|non.performing|gross"
+        },
+        {
+          "query": "Compare that with the previous year.",
+          "expected_resolved_query": "Compare banking sector NPA situation current year versus previous year",
+          "expected_tools": ["rag_search", "document_comparator"],
+          "expected_answer_pattern": "improved|declined|change|comparison"
+        }
+      ],
+      "notes": "Multi-turn leading to comparison."
+    },
+    {
+      "id": "MT-04",
+      "category": "multi_turn",
+      "turns": [
+        {
+          "query": "What is the total credit growth figure?",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "credit.*growth|\\d+"
+        },
+        {
+          "query": "What would it be if it grew 10% more?",
+          "expected_resolved_query": "calculate credit growth figure with additional 10% growth",
+          "expected_tools": ["financial_calculator"],
+          "expected_answer_pattern": "\\d+"
+        }
+      ],
+      "notes": "Multi-turn: retrieve data, then hypothetical calculation."
+    },
+    {
+      "id": "MT-05",
+      "category": "multi_turn",
+      "turns": [
+        {
+          "query": "What was the foreign exchange reserve position?",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "\\$.*billion|forex|reserve"
+        },
+        {
+          "query": "Is that enough to cover 6 months of imports?",
+          "expected_resolved_query": "Is the foreign exchange reserve sufficient to cover 6 months of imports?",
+          "expected_tools": ["rag_search"],
+          "expected_answer_pattern": "months.*import|cover|sufficient"
+        }
+      ],
+      "notes": "Follow-up requires both retrieval and calculation."
+    },
+    {
+      "id": "FB-01",
+      "category": "fallback",
+      "query": "What is the latest cryptocurrency regulation by SEBI in 2026?",
+      "expected_tools": ["rag_search", "web_search"],
+      "expected_max_steps": 3,
+      "expected_answer_pattern": ".*",
+      "notes": "RAG should return low confidence (not in RBI reports). Agent should fall back to web search."
+    },
+    {
+      "id": "FB-02",
+      "category": "fallback",
+      "query": "What is the weather in Mumbai today?",
+      "expected_tools": ["web_search"],
+      "expected_max_steps": 2,
+      "expected_answer_pattern": "weather|temperature|not.*financial",
+      "notes": "Completely out of domain. Agent should either web search or politely decline."
+    },
+    {
+      "id": "FB-03",
+      "category": "edge_case",
+      "query": "Compare the GDP growth in FY2020, FY2021, FY2022, and FY2023 across all reports.",
+      "expected_tools": ["rag_search", "document_comparator"],
+      "expected_max_steps": 5,
+      "expected_answer_pattern": "GDP|growth|comparison",
+      "notes": "Stress test: 4 retrievals + 1 comparison = 5 tool calls. Should hit guardrail limit."
+    },
+    {
+      "id": "GR-01",
+      "category": "guardrail_test",
+      "query": "Give me a comprehensive analysis of every single monetary policy decision RBI has made, all GDP projections, all inflation data, all NPA figures, and compare everything across every year.",
+      "expected_max_steps": 5,
+      "expected_guardrail_trigger": true,
+      "expected_answer_pattern": "budget|analysis.*partial|so far",
+      "notes": "Intentionally overloaded query. Agent should hit tool call limit and respond with partial results."
+    },
+    {
+      "id": "GR-02",
+      "category": "guardrail_test",
+      "query": "Calculate ((((1000 * 1.1) * 1.1) * 1.1) * 1.1) and then compare that with RBI projections and also search the web for global comparisons.",
+      "expected_max_steps": 3,
+      "expected_answer_pattern": "\\d+",
+      "notes": "Multi-tool query. Tests efficient planning."
+    }
+  ]
+}
