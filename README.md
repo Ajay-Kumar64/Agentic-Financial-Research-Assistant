@@ -4,6 +4,7 @@
 
 ## Architecture
 
+```mermaid
 graph LR
     Start([User Query]) --> Memory[memory_resolver]
     Memory --> Planner[planner]
@@ -32,6 +33,8 @@ graph LR
     
     Note["Built on LangChain + LangGraph"]
     style Note fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+
+
 
 ## Key Features
 
