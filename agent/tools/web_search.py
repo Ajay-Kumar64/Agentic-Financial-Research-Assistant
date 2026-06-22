@@ -10,13 +10,16 @@ class WebSearchTool(BaseTool):
     def __init__(self):
         super().__init__(
             name="web_search",
-            description="Searches the live web for macroeconomic indicators, market updates, and external financial context. Input should be a specific search query string."
+            description="Searches the live web for macroeconomic indicators, market updates, and external financial context."
         )
 
     def _run(self, query: str, max_results: int = 4) -> List[Dict[str, str]]:
         try:
             with DDGS() as ddgs:
                 raw_results = list(ddgs.text(query, max_results=max_results))
+
+            if not raw_results:
+                return []
 
             formatted_results = []
             for r in raw_results:
@@ -34,7 +37,13 @@ class WebSearchTool(BaseTool):
                     formatted_results.append({
                         "title": str(r[0]), "url": str(r[1]), "snippet": ""
                     })
+                else:
+                    # Skip unknown formats
+                    continue
 
             return formatted_results
+
         except Exception as e:
-            raise RuntimeError(f"External search engine execution failure: {str(e)}")
+            # Return empty list on failure instead of crashing
+            print(f"[WebSearch] Error: {e}")
+            return []

@@ -774,7 +774,9 @@ def web_search_node(state: AgentState) -> dict:
 
     results_text = ""
     try:
-        results = web_tool.run(query=query, max_results=3)
+        raw_result = web_tool.run(query=query, max_results=3)
+        results = raw_result.result_data if hasattr(raw_result, "result_data") else raw_result
+
         if results:
             text = "\n".join([f"- {r.get('title', '')}: {r.get('snippet', '')}" for r in results])
             print(f"[WebSearch DEBUG] Results: {text[:300]}")
