@@ -13,6 +13,8 @@ from agent.tools.calculator import calc_tool
 from agent.tools.comparator import DocumentComparatorTool
 from agent.tools.web_search import WebSearchTool
 from agent.tools.memory import memory_tool
+from agent.tools.yahoo_finance import yahoo_finance_tool
+from agent.tools.portfolio_analyzer import portfolio_analyzer_tool
 
 # =============================================================================
 # LANGSMITH TRACING (Step 1: Production Observability)
@@ -61,6 +63,8 @@ Available tools:
 - financial_calculator: Math calculations. CRITICAL: When choosing this tool, you MUST provide a valid Python math expression in tool_input. Extract numbers from the context above, or use your knowledge of widely known public financial benchmarks. Examples: "((6.5 - 4.0) / 4.0) * 100", "cagr(1000, 1500, 3)", "growth_rate(4.0, 6.5)".
 - document_comparator: Compare two documents
 - web_search: Search the web when RAG returns no results
+- yahoo_finance: Fetch live stock prices, historical returns, and fundamentals from Yahoo Finance
+- portfolio_analyzer: Calculate Sharpe ratio, volatility, and max drawdown for a multi-asset portfolio
 - final_answer: Respond when enough info is gathered
 
 Max 5 tool calls. Respond with ONLY JSON:
@@ -359,7 +363,39 @@ def planner_node(state: AgentState) -> dict:
             "latency_ms": state.get("latency_ms", 0) + int((time.time() - t0) * 1000),
         }
 
-    # FAST-PATH 7: First turn, no tools used, simple factual -> rag_search
+    # FAST-PATH 7: Stock / market data query -> yahoo_finance
+    stock_keywords = ["stock price", "share price", "market cap", "pe ratio", "ticker", "nifty", "sensex",
+                      "returns", "volatility", "52 week", "dividend", "beta", "fundamental"]
+    if any(k in query_lower for k in stock_keywords) and "yahoo_finance" not in tools_used:
+        return {
+            "next_step": "yahoo_finance",
+            "current_query": query,
+            "steps_executed": steps + ["planner->yahoo_finance(fast-stock)"],
+            "total_tokens_used": tokens,
+            "tokens_consumed": state.get("tokens_consumed", 0),
+            "tool_call_depth": depth + 1,
+            "tools_used": tools_used,
+            "task_complete": False,
+            "latency_ms": state.get("latency_ms", 0) + int((time.time() - t0) * 1000),
+        }
+
+    # FAST-PATH 8: Portfolio / allocation / Sharpe query -> portfolio_analyzer
+    portfolio_keywords = ["portfolio", "sharpe ratio", "allocation", "diversify", "risk adjusted",
+                          "max drawdown", "my holdings", "asset allocation"]
+    if any(k in query_lower for k in portfolio_keywords) and "portfolio_analyzer" not in tools_used:
+        return {
+            "next_step": "portfolio_analyzer",
+            "current_query": query,
+            "steps_executed": steps + ["planner->portfolio_analyzer(fast-portfolio)"],
+            "total_tokens_used": tokens,
+            "tokens_consumed": state.get("tokens_consumed", 0),
+            "tool_call_depth": depth + 1,
+            "tools_used": tools_used,
+            "task_complete": False,
+            "latency_ms": state.get("latency_ms", 0) + int((time.time() - t0) * 1000),
+        }
+
+    # FAST-PATH 9: First turn, no tools used, simple factual -> rag_search
     if not tools_used or all(t in {"planner", "memory_resolver"} for t in tools_used):
         return {
             "next_step": "rag_search",
@@ -437,7 +473,8 @@ def planner_node(state: AgentState) -> dict:
         if start >= 0 and end > start:
             plan = json.loads(clean[start:end])
             parsed = plan.get("next_tool", plan.get("tool", "final_answer"))
-            if parsed in {"rag_search", "financial_calculator", "document_comparator", "web_search", "final_answer"}:
+            if parsed in {"rag_search", "financial_calculator", "document_comparator", "web_search",
+                          "yahoo_finance", "portfolio_analyzer", "final_answer"}:
                 next_tool = parsed
             llm_input = plan.get("tool_input", plan.get("input", ""))
             if llm_input and llm_input != query:
@@ -465,6 +502,10 @@ def planner_node(state: AgentState) -> dict:
         elif next_tool == "document_comparator":
             next_tool = "final_answer"
         elif next_tool == "financial_calculator":
+            next_tool = "final_answer"
+        elif next_tool == "yahoo_finance":
+            next_tool = "final_answer"
+        elif next_tool == "portfolio_analyzer":
             next_tool = "final_answer"
         else:
             next_tool = "final_answer"
@@ -866,6 +907,132 @@ def web_search_node(state: AgentState) -> dict:
     }
 
 
+# =============================================================================
+# YAHOO FINANCE NODE
+# =============================================================================
+def _extract_ticker(query: str) -> str:
+    """Extract stock ticker from query. Supports Indian (.NS) and US tickers."""
+    match = re.search(r'\b([A-Z]{2,10}(?:\.NS|\.BO)?)\b', query.upper())
+    if match:
+        return match.group(1)
+    mappings = {
+        "reliance": "RELIANCE.NS",
+        "tcs": "TCS.NS",
+        "infosys": "INFY.NS",
+        "hdfc bank": "HDFCBANK.NS",
+        "sbi": "SBIN.NS",
+        "nifty": "^NSEI",
+        "apple": "AAPL",
+        "microsoft": "MSFT",
+        "google": "GOOGL",
+    }
+    q_lower = query.lower()
+    for name, ticker in mappings.items():
+        if name in q_lower:
+            return ticker
+    return "RELIANCE.NS"  # Default fallback for demo
+
+
+def _detect_yahoo_operation(query: str) -> str:
+    q = query.lower()
+    if any(w in q for w in ["return", "volatility", "performance", "sharpe", "how did", "gain", "loss"]):
+        return "returns"
+    if any(w in q for w in ["pe ratio", "market cap", "fundamental", "debt", "revenue"]):
+        return "fundamentals"
+    if any(w in q for w in ["history", "past", "last year", "chart", "trend"]):
+        return "history"
+    return "quote"
+
+
+def yahoo_finance_node(state: AgentState) -> dict:
+    t0 = time.time()
+    query = state.get("current_query") or state.get("query") or ""
+
+    ticker = _extract_ticker(query)
+    operation = _detect_yahoo_operation(query)
+
+    result = yahoo_finance_tool.run(ticker=ticker, operation=operation)
+
+    steps = state.get("steps_executed", [])
+    tools_used = state.get("tools_used", [])
+
+    # FIXED: result.error_message (not result.error)
+    result_text = str(result.result_data) if result.success else result.error_message
+
+    print(f"[Agent Timing] Yahoo Finance: {round(time.time() - t0, 3)}s | Ticker: {ticker} | Op: {operation}")
+
+    return {
+        "steps_executed": steps + ["yahoo_finance"],
+        "tools_used": tools_used + ["yahoo_finance"],
+        "tool_calls_count": state.get("tool_calls_count", 0) + 1,
+        "tool_outputs": state.get("tool_outputs", []) + [{"tool": "yahoo_finance", "result": result_text[:300]}],
+        "retrieved_contexts": state.get("retrieved_contexts", []) + [result_text],
+        "total_tokens_used": state.get("total_tokens_used", 0) + len(result_text.split()),
+        "latency_ms": state.get("latency_ms", 0) + int((time.time() - t0) * 1000),
+    }
+
+
+
+
+
+
+# =============================================================================
+# PORTFOLIO ANALYZER NODE
+# =============================================================================
+def _extract_portfolio_params(query: str) -> tuple:
+    """Extract tickers and optional weights from portfolio query."""
+    tickers_match = re.findall(r'\b([A-Z]{2,10}(?:\.NS|\.BO)?)\b', query.upper())
+    if not tickers_match:
+        return "RELIANCE.NS,INFY.NS,HDFCBANK.NS", "0.4,0.3,0.3"
+
+    tickers = ",".join(tickers_match)
+
+    weights_match = re.findall(r'(\d{1,2})\s*%', query)
+    if weights_match:
+        weights = [int(w) / 100 for w in weights_match]
+        if abs(sum(weights) - 1.0) < 0.05:
+            weights_str = ",".join([str(w) for w in weights])
+            return tickers, weights_str
+
+    return tickers, None
+
+
+def portfolio_analyzer_node(state: AgentState) -> dict:
+    t0 = time.time()
+    query = state.get("current_query") or state.get("query") or ""
+
+    tickers, weights = _extract_portfolio_params(query)
+
+    result = portfolio_analyzer_tool.run(tickers=tickers, weights=weights)
+
+    steps = state.get("steps_executed", [])
+    tools_used = state.get("tools_used", [])
+    calcs = state.get("calculation_results", [])
+
+    # FIXED: result.error_message (not result.error)
+    result_text = str(result.result_data) if result.success else result.error_message
+
+    if result.success and result.result_data:
+        calcs = calcs + [{
+            "expression": f"portfolio_sharpe({tickers})",
+            "result": result.result_data.get("portfolio", {}).get("sharpe_ratio"),
+            "tool": "portfolio_analyzer"
+        }]
+
+    print(f"[Agent Timing] Portfolio Analyzer: {round(time.time() - t0, 3)}s | Tickers: {tickers}")
+
+    return {
+        "steps_executed": steps + ["portfolio_analyzer"],
+        "tools_used": tools_used + ["portfolio_analyzer"],
+        "tool_calls_count": state.get("tool_calls_count", 0) + 1,
+        "tool_outputs": state.get("tool_outputs", []) + [{"tool": "portfolio_analyzer", "result": result_text[:400]}],
+        "calculation_results": calcs,
+        "retrieved_contexts": state.get("retrieved_contexts", []) + [result_text],
+        "total_tokens_used": state.get("total_tokens_used", 0) + len(result_text.split()),
+        "latency_ms": state.get("latency_ms", 0) + int((time.time() - t0) * 1000),
+    }
+
+
 def final_answer_node(state: AgentState) -> dict:
     t0 = time.time()
     query = state.get("query") or ""
@@ -906,6 +1073,15 @@ def final_answer_node(state: AgentState) -> dict:
                 if result not in web_results:
                     web_results.append(result)
 
+    # Also extract yahoo_finance and portfolio_analyzer results as structured data
+    structured_tool_results = []
+    for output in state.get("tool_outputs", []):
+        tool_name = output.get("tool", "")
+        if tool_name in ("yahoo_finance", "portfolio_analyzer"):
+            result = output.get("result", "")
+            if result and not result.startswith("["):
+                structured_tool_results.append(f"[{tool_name}] {result[:400]}")
+
     # Fallback: scan contexts but EXCLUDE RAG text summaries
     for ctx in contexts:
         if not ctx:
@@ -928,6 +1104,9 @@ def final_answer_node(state: AgentState) -> dict:
         web_lines.append(f"[Web{i}] {ctx[:400]}")
 
     web_text = "\n".join(web_lines) if web_lines else ""
+
+    # Structured tool results (Yahoo Finance, Portfolio)
+    structured_text = "\n".join(structured_tool_results) if structured_tool_results else ""
 
     # RAG TEXT SOURCES — ONLY include if web search was NEVER attempted
     source_lines = []
@@ -993,7 +1172,15 @@ def final_answer_node(state: AgentState) -> dict:
     else:
         prompt_lines.append("No derived answer available.")
 
-    # WEB SOURCES first when available
+    # Structured tool results (Yahoo Finance, Portfolio) first
+    if structured_text:
+        prompt_lines.extend([
+            "",
+            "=== STRUCTURED DATA (Live market data / portfolio analysis) ===",
+            structured_text,
+        ])
+
+    # WEB SOURCES next when available
     if web_text:
         prompt_lines.extend([
             "",
@@ -1015,8 +1202,9 @@ def final_answer_node(state: AgentState) -> dict:
         "",
         "Instructions:",
         "- If a DERIVED ANSWER is shown above and is informative, state it as the answer.",
-        "- If WEB SOURCES are available, use them as the PRIMARY source of truth. Ignore any RAG sources if they are off-topic.",
-        "- If NO web sources exist and NO derived answer exists, but text sources answer the question, cite them with [1], [2].",
+        "- If STRUCTURED DATA (live market data, portfolio metrics) is available, use it as the PRIMARY source of truth.",
+        "- If WEB SOURCES are available, use them as the next source of truth. Ignore any RAG sources if they are off-topic.",
+        "- If NO web/structured data exists and NO derived answer exists, but text sources answer the question, cite them with [1], [2].",
         "- If ALL sources are empty or off-topic, state clearly that the requested information could not be retrieved from the available documents or web search.",
         "Answer concisely.",
     ])
@@ -1076,7 +1264,7 @@ def final_answer_node(state: AgentState) -> dict:
 
 
 # =============================================================================
-# GRAPH CONSTRUCTION (Updated with Human Review node)
+# GRAPH CONSTRUCTION (Updated with Yahoo Finance + Portfolio Analyzer + Human Review)
 # =============================================================================
 workflow = StateGraph(AgentState)
 
@@ -1086,9 +1274,11 @@ workflow.add_node("rag_search", rag_search_node)
 workflow.add_node("financial_calculator", financial_calculator_node)
 workflow.add_node("document_comparator", document_comparator_node)
 workflow.add_node("web_search", web_search_node)
+workflow.add_node("yahoo_finance", yahoo_finance_node)
+workflow.add_node("portfolio_analyzer", portfolio_analyzer_node)
 workflow.add_node("guardrail_check", guardrail_check_node)
 workflow.add_node("final_answer", final_answer_node)
-workflow.add_node("human_review", human_review_node)  # NEW: Human-in-the-loop
+workflow.add_node("human_review", human_review_node)
 
 workflow.set_entry_point("memory_resolver")
 workflow.add_edge("memory_resolver", "planner")
@@ -1101,6 +1291,8 @@ workflow.add_conditional_edges(
         "financial_calculator": "financial_calculator",
         "document_comparator": "document_comparator",
         "web_search": "web_search",
+        "yahoo_finance": "yahoo_finance",
+        "portfolio_analyzer": "portfolio_analyzer",
         "final_answer": "final_answer",
     }
 )
@@ -1109,6 +1301,8 @@ workflow.add_edge("rag_search", "guardrail_check")
 workflow.add_edge("financial_calculator", "guardrail_check")
 workflow.add_edge("document_comparator", "guardrail_check")
 workflow.add_edge("web_search", "guardrail_check")
+workflow.add_edge("yahoo_finance", "guardrail_check")
+workflow.add_edge("portfolio_analyzer", "guardrail_check")
 
 workflow.add_conditional_edges(
     "guardrail_check",
@@ -1116,11 +1310,11 @@ workflow.add_conditional_edges(
     {
         "planner": "planner",
         "final_answer": "final_answer",
-        "human_review": "human_review",  # NEW: Route to human review
+        "human_review": "human_review",
     }
 )
 
-workflow.add_edge("human_review", END)  # NEW: Human review ends the flow
+workflow.add_edge("human_review", END)
 workflow.add_edge("final_answer", END)
 
 agent_brain = workflow.compile()
