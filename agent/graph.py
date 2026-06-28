@@ -59,16 +59,22 @@ def _load_prompt(filename: str, fallback: str) -> str:
 PLANNER_FALLBACK = """You are a financial research planner. Decide the NEXT tool to call.
 
 Available tools:
-- rag_search: Retrieve facts from RBI reports
-- financial_calculator: Math calculations. CRITICAL: When choosing this tool, you MUST provide a valid Python math expression in tool_input. Extract numbers from the context above, or use your knowledge of widely known public financial benchmarks. Examples: "((6.5 - 4.0) / 4.0) * 100", "cagr(1000, 1500, 3)", "growth_rate(4.0, 6.5)".
-- document_comparator: Compare two documents
-- web_search: Search the web when RAG returns no results
-- yahoo_finance: Fetch live stock prices, historical returns, and fundamentals from Yahoo Finance
-- portfolio_analyzer: Calculate Sharpe ratio, volatility, and max drawdown for a multi-asset portfolio
-- final_answer: Respond when enough info is gathered
+- rag_search: Retrieve facts from RBI reports. tool_input: the search query.
+- financial_calculator: Math calculations. tool_input: a valid Python math expression like "((6.5 - 4.0) / 4.0) * 100" or "cagr(1000, 1500, 3)".
+- document_comparator: Compare two documents. tool_input: metric to compare.
+- web_search: Search the web when RAG returns no results. tool_input: the search query.
+- yahoo_finance: Fetch live stock prices from Yahoo Finance. 
+  CRITICAL: tool_input MUST be ONLY the stock ticker. 
+  For Indian NSE stocks: add .NS suffix (e.g., RELIANCE.NS, TCS.NS, INFY.NS, HDFCBANK.NS, SBIN.NS).
+  For US stocks: just the ticker (e.g., AAPL, MSFT, GOOGL).
+  Examples: "RELIANCE.NS", "TCS.NS", "AAPL"
+- portfolio_analyzer: Calculate Sharpe ratio, volatility, max drawdown.
+  CRITICAL: tool_input MUST be formatted as: "tickers:RELIANCE.NS,INFY.NS,HDFCBANK.NS|weights:0.4,0.3,0.3"
+  For equal weights, omit weights: "tickers:RELIANCE.NS,INFY.NS"
+- final_answer: Respond when enough info is gathered.
 
 Max 5 tool calls. Respond with ONLY JSON:
-{"next_tool": "...", "reason": "...", "tool_input": "expression or query"}"""
+{"next_tool": "...", "reason": "...", "tool_input": "..."}"""
 
 RESPONSE_FALLBACK = """You are a financial research assistant. Answer using provided sources and calculations.
 - Cite text sources with [1], [2], etc.
@@ -190,9 +196,15 @@ def guardrail_check_node(state: AgentState) -> dict:
         }
     elif decision == "continue":
         # NEW: Critical low confidence + already tried web_search -> human review
+        # BUT: Skip human review if we have structured data from yahoo_finance or portfolio_analyzer
         confidence = state.get("confidence_score", 0.0)
         tools_used = state.get("tools_used", [])
         depth = state.get("tool_call_depth", 0)
+
+        # If we have live market data or portfolio analysis, don't human-review
+        has_structured_data = any(t in tools_used for t in ["yahoo_finance", "portfolio_analyzer"])
+        if has_structured_data:
+            return {"next_step": "planner"}
 
         if (confidence < 0.4
                 and "web_search" in tools_used
@@ -364,12 +376,23 @@ def planner_node(state: AgentState) -> dict:
         }
 
     # FAST-PATH 7: Stock / market data query -> yahoo_finance
+    # FAST-PATH 7: Stock / market data query -> yahoo_finance
     stock_keywords = ["stock price", "share price", "market cap", "pe ratio", "ticker", "nifty", "sensex",
                       "returns", "volatility", "52 week", "dividend", "beta", "fundamental"]
-    if any(k in query_lower for k in stock_keywords) and "yahoo_finance" not in tools_used:
+    ticker_keywords = ["tcs", "reliance", "infosys", "hdfc", "hdfc bank", "sbi", "nifty", "sensex",
+                       "apple", "microsoft", "google", "amazon", "tesla", "aapl", "msft", "googl", "amzn", "tsla"]
+    price_keywords = ["price", "quote", "trading at", "share", "stock", "cost"]
+
+    has_stock_keyword = any(k in query_lower for k in stock_keywords)
+    has_ticker_and_price = any(k in query_lower for k in ticker_keywords) and any(
+        k in query_lower for k in price_keywords)
+
+    if (has_stock_keyword or has_ticker_and_price) and "yahoo_finance" not in tools_used:
+        ticker = _extract_ticker_from_query(query)
         return {
             "next_step": "yahoo_finance",
             "current_query": query,
+            "tool_input": ticker,
             "steps_executed": steps + ["planner->yahoo_finance(fast-stock)"],
             "total_tokens_used": tokens,
             "tokens_consumed": state.get("tokens_consumed", 0),
@@ -383,9 +406,11 @@ def planner_node(state: AgentState) -> dict:
     portfolio_keywords = ["portfolio", "sharpe ratio", "allocation", "diversify", "risk adjusted",
                           "max drawdown", "my holdings", "asset allocation"]
     if any(k in query_lower for k in portfolio_keywords) and "portfolio_analyzer" not in tools_used:
+        port_input = _extract_portfolio_input_from_query(query)
         return {
             "next_step": "portfolio_analyzer",
             "current_query": query,
+            "tool_input": port_input,
             "steps_executed": steps + ["planner->portfolio_analyzer(fast-portfolio)"],
             "total_tokens_used": tokens,
             "tokens_consumed": state.get("tokens_consumed", 0),
@@ -510,8 +535,10 @@ def planner_node(state: AgentState) -> dict:
         else:
             next_tool = "final_answer"
 
-    # Smart compare override
-    if next_tool == "rag_search" and passages and (
+    # =============================================================================
+    # PATCH 2: Force comparator for any compare query when we have passages (FB-03 fix)
+    # =============================================================================
+    if passages and (
             "compare" in query_lower or "versus" in query_lower or "difference" in query_lower):
         if "document_comparator" not in tools_used:
             next_tool = "document_comparator"
@@ -602,10 +629,28 @@ def _extract_math_expression(text: str) -> str:
     if re.match(r'^[\d\.\+\-\*/\(\)\s,]+$', text) and any(op in text for op in '+-*/'):
         return text
 
-    text = re.sub(r'^(cagr calculation[:\s]*|calculate[:\s]*|compute[:\s]*|what is[:\s]*|what\'s[:\s]*)+', '', text,
+    text = re.sub(r'^(cagr calculation[:\s]*|calculate[:\s]*|compute[:\s]*|what is[:\s]*|what\'s[:\s]*)+', '',
+                  text,
                   flags=re.IGNORECASE)
     text = text.strip()
     text = text.replace('^', '**')
+
+    # =============================================================================
+    # PATCH 1: Extract balanced parenthesized expression before non-math text (GR-02 fix)
+    # =============================================================================
+    paren_depth = 0
+    start_idx = None
+    for i, ch in enumerate(text):
+        if ch == '(':
+            if paren_depth == 0:
+                start_idx = i
+            paren_depth += 1
+        elif ch == ')':
+            paren_depth -= 1
+            if paren_depth == 0 and start_idx is not None:
+                expr = text[start_idx:i + 1]
+                if _has_valid_math(expr):
+                    return expr
 
     direct = re.search(r'(cagr|growth_rate|ratio|percentage)\s*\([^)]+\)', text, re.IGNORECASE)
     if direct:
@@ -908,29 +953,56 @@ def web_search_node(state: AgentState) -> dict:
 
 
 # =============================================================================
-# YAHOO FINANCE NODE
+# YAHOO FINANCE HELPERS & NODE
 # =============================================================================
-def _extract_ticker(query: str) -> str:
-    """Extract stock ticker from query. Supports Indian (.NS) and US tickers."""
-    match = re.search(r'\b([A-Z]{2,10}(?:\.NS|\.BO)?)\b', query.upper())
+def _extract_ticker_from_query(query: str) -> str:
+    """Fast-path ticker extraction for planner routing (no LLM)."""
+    # 1. Explicit .NS / .BO tickers (highest confidence)
+    match = re.search(r'\b([A-Z]{2,10}\.(?:NS|BO))\b', query.upper())
     if match:
         return match.group(1)
+
+    # 2. Known company name / ticker mappings
     mappings = {
-        "reliance": "RELIANCE.NS",
-        "tcs": "TCS.NS",
-        "infosys": "INFY.NS",
-        "hdfc bank": "HDFCBANK.NS",
-        "sbi": "SBIN.NS",
-        "nifty": "^NSEI",
-        "apple": "AAPL",
-        "microsoft": "MSFT",
-        "google": "GOOGL",
+        "tcs": "TCS.NS", "reliance": "RELIANCE.NS", "infosys": "INFY.NS", "infy": "INFY.NS",
+        "hdfc bank": "HDFCBANK.NS", "hdfcbank": "HDFCBANK.NS", "hdfc": "HDFCBANK.NS",
+        "sbi": "SBIN.NS", "sbin": "SBIN.NS",
+        "apple": "AAPL", "microsoft": "MSFT", "google": "GOOGL", "amazon": "AMZN",
+        "tesla": "TSLA", "nifty": "^NSEI", "sensex": "^BSESN",
     }
     q_lower = query.lower()
     for name, ticker in mappings.items():
         if name in q_lower:
             return ticker
-    return "RELIANCE.NS"  # Default fallback for demo
+
+    # 3. Standalone ALL-CAPS words that look like tickers (not common English)
+    common_words = {"THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "ANY", "CAN",
+                    "HAD", "HER", "WAS", "ONE", "OUR", "OUT", "DAY", "GET", "HAS", "HIM",
+                    "HIS", "HOW", "MAN", "NEW", "NOW", "OLD", "SEE", "TWO", "WAY", "WHO",
+                    "BOY", "DID", "ITS", "LET", "PUT", "SAY", "SHE", "TOO", "USE", "OFF",
+                    "AN", "AS", "AT", "BE", "BY", "DO", "GO", "IF", "IN", "IS", "IT", "ME",
+                    "MY", "NO", "OF", "ON", "OR", "SO", "TO", "UP", "US", "WE"}
+    match = re.search(r'\b([A-Z]{1,5})\b', query.upper())
+    if match and match.group(1) not in common_words:
+        return match.group(1)
+
+    return "RELIANCE.NS"
+
+
+def _extract_ticker(state: AgentState) -> str:
+    """
+    Get ticker from planner's tool_input. The LLM already extracted it.
+    No regex needed — the planner outputs clean tickers.
+    """
+    tool_input = (state.get("tool_input") or "").strip().upper()
+
+    # Planner already gave us a clean ticker
+    if tool_input and re.match(r'^[A-Z][A-Z0-9]*(\.[A-Z]{2})?$', tool_input):
+        return tool_input
+
+    # Ultimate fallback (should never happen if planner works)
+    print(f"[YahooFinance] Warning: No clean ticker from planner, got: '{tool_input}'")
+    return "RELIANCE.NS"
 
 
 def _detect_yahoo_operation(query: str) -> str:
@@ -946,20 +1018,22 @@ def _detect_yahoo_operation(query: str) -> str:
 
 def yahoo_finance_node(state: AgentState) -> dict:
     t0 = time.time()
-    query = state.get("current_query") or state.get("query") or ""
 
-    ticker = _extract_ticker(query)
-    operation = _detect_yahoo_operation(query)
+    # LLM already extracted the ticker in planner
+    ticker = _extract_ticker(state)
+    operation = _detect_yahoo_operation(state.get("query", ""))
+
+    print(f"[YahooFinance] Using ticker from planner: {ticker}")
 
     result = yahoo_finance_tool.run(ticker=ticker, operation=operation)
 
     steps = state.get("steps_executed", [])
     tools_used = state.get("tools_used", [])
 
-    # FIXED: result.error_message (not result.error)
     result_text = str(result.result_data) if result.success else result.error_message
 
-    print(f"[Agent Timing] Yahoo Finance: {round(time.time() - t0, 3)}s | Ticker: {ticker} | Op: {operation}")
+    print(
+        f"[Agent Timing] Yahoo Finance: {round(time.time() - t0, 3)}s | Ticker: {ticker} | Op: {operation} | Success: {result.success}")
 
     return {
         "steps_executed": steps + ["yahoo_finance"],
@@ -969,39 +1043,96 @@ def yahoo_finance_node(state: AgentState) -> dict:
         "retrieved_contexts": state.get("retrieved_contexts", []) + [result_text],
         "total_tokens_used": state.get("total_tokens_used", 0) + len(result_text.split()),
         "latency_ms": state.get("latency_ms", 0) + int((time.time() - t0) * 1000),
+        "confidence_score": 0.9 if result.success else 0.0,  # <-- ADD THIS
     }
 
 
-
-
-
-
 # =============================================================================
-# PORTFOLIO ANALYZER NODE
+# PORTFOLIO ANALYZER HELPERS & NODE
 # =============================================================================
-def _extract_portfolio_params(query: str) -> tuple:
-    """Extract tickers and optional weights from portfolio query."""
-    tickers_match = re.findall(r'\b([A-Z]{2,10}(?:\.NS|\.BO)?)\b', query.upper())
-    if not tickers_match:
-        return "RELIANCE.NS,INFY.NS,HDFCBANK.NS", "0.4,0.3,0.3"
+def _extract_portfolio_input_from_query(query: str) -> str:
+    """Fast-path portfolio param extraction for planner routing (no LLM)."""
+    q_lower = query.lower()
 
-    tickers = ",".join(tickers_match)
+    # Known company name / ticker mappings (same as _extract_ticker_from_query)
+    mappings = {
+        "tcs": "TCS.NS", "reliance": "RELIANCE.NS", "infosys": "INFY.NS", "infy": "INFY.NS",
+        "hdfc bank": "HDFCBANK.NS", "hdfcbank": "HDFCBANK.NS", "hdfc": "HDFCBANK.NS",
+        "sbi": "SBIN.NS", "sbin": "SBIN.NS",
+        "apple": "AAPL", "microsoft": "MSFT", "google": "GOOGL", "amazon": "AMZN",
+        "tesla": "TSLA", "nifty": "^NSEI", "sensex": "^BSESN",
+    }
+
+    tickers = []
+    for name, ticker in mappings.items():
+        if name in q_lower and ticker not in tickers:
+            tickers.append(ticker)
+
+    # Explicit .NS / .BO tickers only (no noisy US-style regex here)
+    explicit = re.findall(r'\b([A-Z]{2,10}\.(?:NS|BO))\b', query.upper())
+    for t in explicit:
+        if t not in tickers:
+            tickers.append(t)
+
+    if not tickers:
+        return "tickers:RELIANCE.NS,INFY.NS,HDFCBANK.NS|weights:0.4,0.3,0.3"
+
+    tickers_str = ",".join(tickers)
 
     weights_match = re.findall(r'(\d{1,2})\s*%', query)
     if weights_match:
         weights = [int(w) / 100 for w in weights_match]
         if abs(sum(weights) - 1.0) < 0.05:
             weights_str = ",".join([str(w) for w in weights])
-            return tickers, weights_str
+            return f"tickers:{tickers_str}|weights:{weights_str}"
 
-    return tickers, None
+    return f"tickers:{tickers_str}"
+
+
+def _extract_portfolio_params(state: AgentState) -> tuple:
+    """
+    Parse portfolio parameters from planner's tool_input.
+    The LLM formats it as: 'tickers:RELIANCE.NS,INFY.NS,HDFCBANK.NS|weights:0.4,0.3,0.3'
+    Or just: 'RELIANCE.NS,INFY.NS,HDFCBANK.NS'
+    """
+    tool_input = (state.get("tool_input") or "").strip()
+
+    if not tool_input:
+        print(f"[Portfolio] Warning: No tool_input from planner, using default")
+        return "RELIANCE.NS,INFY.NS,HDFCBANK.NS", "0.4,0.3,0.3"
+
+    # Format: "tickers:RELIANCE.NS,INFY.NS|weights:0.4,0.3,0.3"
+    if "tickers:" in tool_input.lower():
+        tickers_match = re.search(r'tickers:\s*([^|]+)', tool_input, re.IGNORECASE)
+        weights_match = re.search(r'weights:\s*([^|]+)', tool_input, re.IGNORECASE)
+
+        tickers = tickers_match.group(1).strip() if tickers_match else ""
+        weights = weights_match.group(1).strip() if weights_match else None
+
+        if tickers:
+            return tickers, weights
+
+    # Format: just comma-separated tickers (planner didn't use prefix)
+    if ',' in tool_input and all(c.isupper() or c in '.,' or c.isspace() for c in tool_input):
+        tickers = ','.join(t.strip() for t in tool_input.split(',') if t.strip())
+        return tickers, None
+
+    # Single ticker
+    clean = tool_input.replace(' ', '').replace(',', '')
+    if clean and re.match(r'^[A-Z][A-Z0-9]*(\.[A-Z]{2})?$', clean):
+        return clean, None
+
+    print(f"[Portfolio] Warning: Could not parse tool_input: '{tool_input}', using default")
+    return "RELIANCE.NS,INFY.NS,HDFCBANK.NS", "0.4,0.3,0.3"
 
 
 def portfolio_analyzer_node(state: AgentState) -> dict:
     t0 = time.time()
-    query = state.get("current_query") or state.get("query") or ""
 
-    tickers, weights = _extract_portfolio_params(query)
+    # LLM already extracted tickers and weights in planner
+    tickers, weights = _extract_portfolio_params(state)
+
+    print(f"[Portfolio] Using from planner: tickers={tickers}, weights={weights}")
 
     result = portfolio_analyzer_tool.run(tickers=tickers, weights=weights)
 
@@ -1009,7 +1140,6 @@ def portfolio_analyzer_node(state: AgentState) -> dict:
     tools_used = state.get("tools_used", [])
     calcs = state.get("calculation_results", [])
 
-    # FIXED: result.error_message (not result.error)
     result_text = str(result.result_data) if result.success else result.error_message
 
     if result.success and result.result_data:
@@ -1019,7 +1149,8 @@ def portfolio_analyzer_node(state: AgentState) -> dict:
             "tool": "portfolio_analyzer"
         }]
 
-    print(f"[Agent Timing] Portfolio Analyzer: {round(time.time() - t0, 3)}s | Tickers: {tickers}")
+    print(
+        f"[Agent Timing] Portfolio Analyzer: {round(time.time() - t0, 3)}s | Tickers: {tickers} | Success: {result.success}")
 
     return {
         "steps_executed": steps + ["portfolio_analyzer"],
@@ -1030,6 +1161,7 @@ def portfolio_analyzer_node(state: AgentState) -> dict:
         "retrieved_contexts": state.get("retrieved_contexts", []) + [result_text],
         "total_tokens_used": state.get("total_tokens_used", 0) + len(result_text.split()),
         "latency_ms": state.get("latency_ms", 0) + int((time.time() - t0) * 1000),
+        "confidence_score": 0.9 if result.success else 0.0,  # <-- ADD THIS
     }
 
 

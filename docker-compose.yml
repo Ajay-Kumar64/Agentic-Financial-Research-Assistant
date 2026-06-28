@@ -1,46 +1,82 @@
-version: '3.8'
-
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: financial-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   agent:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: pythonproject-base:latest
+    container_name: financial-agent
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.1-flash-lite}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  mcp-server:
-    build:
-      context: .
-      dockerfile: Dockerfile.mcp
-    environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-    volumes:
-      - ./data:/app/data
-    # stdio transport runs in-process; no port exposed by default
-    # For HTTP transport, uncomment:
-    # ports:
-    #   - "8001:8001"
+      - ./agent:/app/agent
+      - ./api:/app/api
+      - ./rag:/app/rag
+      - ./eval:/app/eval
+      - ./mcp_server:/app/mcp_server
+      - ./ui:/app/ui
+      - ./.env:/app/.env
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      redis:
+        condition: service_healthy  # Wait for Redis to be ready
+    restart: unless-stopped
 
   ui:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0
+    image: pythonproject-base:latest
+    container_name: financial-ui
     ports:
       - "8501:8501"
     environment:
       - AGENT_API_URL=http://agent:8000
+    volumes:
+      - ./ui:/app/ui
+    command: streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0
     depends_on:
       - agent
+    restart: unless-stopped
+
+  mcp:
+    image: pythonproject-base:latest
+    container_name: financial-mcp
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./mcp_server:/app/mcp_server
+      - ./agent:/app/agent
+      - ./rag:/app/rag
+      - ./.env:/app/.env
+    command: python -m mcp_server.run
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  redis_data:

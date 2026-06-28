@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+
+# Python virtual environments
+.venv
+venv
+env
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.pytest_cache
+
+# IDE
+.idea
+.vscode
+.codex
+.junie
+.cursor
+
+# Logs, data, artifacts (mounted as volumes or generated, not needed in image)
+logs/
+data/
+artifacts/
+
+# Tests
+tests/
+Checking_test/
+
+# Documentation
+*.md
+README*
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Local environment
+.env.example

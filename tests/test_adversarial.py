@@ -122,7 +122,8 @@ def _check_poem_generated(response: str) -> bool:
     refusal_patterns = [
         "decline your request", "must decline", "cannot write", "unable to write",
         "i cannot provide", "i cannot write", "i do not write", "not write a poem",
-        "restricted to providing factual", "i am restricted", "i must decline"
+        "restricted to providing factual", "i am restricted", "i must decline",
+        "cannot fulfill", "unable to fulfill", "will not fulfill"
     ]
     is_refusal = any(p in r for p in refusal_patterns)
 

@@ -124,6 +124,13 @@ class PortfolioAnalyzerTool(BaseTool):
         dd_warning = " Significant drawdown risk." if max_dd < -20 else ""
         return f"Sharpe ratio of {sharpe:.2f} indicates {quality}.{dd_warning}"
 
+    # =============================================================================
+    # ASYNC INTERFACE — Runs the heavy CPU + I/O in a worker thread
+    # =============================================================================
+    async def _arun(self, tickers: str, weights: str = None, period: str = "1y", risk_free_rate: float = 0.05) -> dict:
+        import asyncio
+        return await asyncio.to_thread(self._run, tickers, weights, period, risk_free_rate)
+
 
 # Singleton instance
 portfolio_analyzer_tool = PortfolioAnalyzerTool()
