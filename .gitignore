@@ -54,3 +54,5 @@ embeddings/
 *.jsonl
 model_weights/
 models/
+.coverage
+data/*.pdf
