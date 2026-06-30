@@ -42,3 +42,15 @@ Thumbs.db
 # Docker
 *.pid
 Erros_and_Debug.md
+
+# Embeddings & Models (LARGE FILES - keep out of git)
+embeddings/
+*.bin
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.onnx
+*.jsonl
+model_weights/
+models/
