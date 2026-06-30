@@ -8,12 +8,15 @@ import traceback
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, List
+import multiprocessing
+import uvicorn
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from langsmith import traceable
-
+multiprocessing.freeze_support()
+from agent.graph import agent_brain
 from api.models import (
     ChatRequest,
     ChatResponse,
@@ -378,13 +381,13 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         if history:
             initial_state["conversation_history"] = history
 
-        # Load previous state for context continuity
-        last_state = session.get("last_state", {})
-        if last_state:
-            initial_state["retrieved_passages"] = last_state.get("retrieved_passages", [])
-            initial_state["calculation_results"] = last_state.get("calculation_results", [])
-            initial_state["retrieved_contexts"] = last_state.get("retrieved_contexts", [])
-            initial_state["tools_used"] = last_state.get("tools_used", [])
+        # # Load previous state for context continuity
+        # last_state = session.get("last_state", {})
+        # if last_state:
+        #     initial_state["retrieved_passages"] = last_state.get("retrieved_passages", [])
+        #     initial_state["calculation_results"] = last_state.get("calculation_results", [])
+        #     initial_state["retrieved_contexts"] = last_state.get("retrieved_contexts", [])
+        #     initial_state["tools_used"] = last_state.get("tools_used", [])
 
         # RUN AGENT — Entire graph runs in a worker thread
         print(f"[API] Starting agent for query: {request.message[:60]}...")
@@ -664,5 +667,12 @@ async def run_ragas_single_evaluation(
 # MAIN
 # =============================================================================
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    multiprocessing.freeze_support()
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,  # <-- disable reload on Windows
+        workers=1,  # <-- use single worker on Windows (or omit workers)
+        loop="asyncio",
+    )

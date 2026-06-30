@@ -33,7 +33,9 @@ class RAGConfig:
     # =====================================================================
     # OpenSearch Connection
     # =====================================================================
-    opensearch_host: str = field(default_factory=lambda: os.getenv("OPENSEARCH_HOST", "opensearch"))
+    # DEV: Use localhost (when running Python locally, OpenSearch in Docker)
+    # PROD: Use 'opensearch' (when everything is in Docker)
+    opensearch_host: str = field(default_factory=lambda: os.getenv("OPENSEARCH_HOST", "localhost"))
     opensearch_port: int = field(default_factory=lambda: int(os.getenv("OPENSEARCH_PORT", "9200")))
     opensearch_user: str = field(default_factory=lambda: os.getenv("OPENSEARCH_USER", "admin"))
     opensearch_password: str = field(default_factory=lambda: os.getenv("OPENSEARCH_PASSWORD", "admin"))

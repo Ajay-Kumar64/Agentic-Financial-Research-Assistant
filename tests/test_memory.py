@@ -1,5 +1,5 @@
 # tests/test_memory.py
-from agent.tools.memory import memory_tool
+from agent.memory import memory_tool
 
 
 def test_memory_no_history():

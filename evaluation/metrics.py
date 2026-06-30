@@ -52,6 +52,22 @@ def error_recovery_rate(results: List[Dict]) -> float:
         return 1.0
     return round(recoveries / total_failures, 2)
 
+def score_answer_relevance(question: str, answer: str, context: str) -> float:
+    """Heuristic relevance score (0-1). Replace with LLM judge for production."""
+    q_words = set(question.lower().split())
+    a_words = set(answer.lower().split())
+    c_words = set(context.lower().split())
+    overlap = len(q_words & a_words) / len(q_words) if q_words else 0
+    context_overlap = len(a_words & c_words) / len(a_words) if a_words else 0
+    return round((overlap * 0.5 + context_overlap * 0.5), 2)
+
+
+def score_faithfulness(answer: str, context: str) -> float:
+    """Heuristic faithfulness score (0-1). Replace with LLM judge for production."""
+    a_words = set(answer.lower().split())
+    c_words = set(context.lower().split())
+    overlap = len(a_words & c_words) / len(a_words) if a_words else 0
+    return round(overlap, 2)
 
 def plan_accuracy(results: List[Dict]) -> float:
     """Metric 5: % of queries where planned tools matched actual first tool."""

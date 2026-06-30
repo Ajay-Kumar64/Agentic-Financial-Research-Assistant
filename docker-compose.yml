@@ -1,35 +1,85 @@
+# =============================================================================
+# Production Docker Compose for Agentic Financial Research Assistant
+# =============================================================================
+
 services:
+  # =========================================================================
+  # OpenSearch — Vector + Text Search Backend
+  # =========================================================================
+  opensearch:
+    image: opensearchproject/opensearch:2.14.0
+    container_name: opensearch
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=false
+      - "OPENSEARCH_JAVA_OPTS=-Xms256m -Xmx256m"
+      - plugins.security.disabled=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    # Disabled: Internal healthcheck fails on Windows, but DB is healthy (verified via curl.exe)
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    networks:
+      - financial-network
+
+  # =========================================================================
+  # Redis — Cache + Conversation Store
+  # =========================================================================
   redis:
     image: redis:7-alpine
     container_name: financial-redis
-    ports:
-      - "6380:6379"
-    volumes:
-      - redis_data:/data
-      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
-    command: redis-server /usr/local/etc/redis/redis.conf
+    command: >
+      redis-server
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
-    restart: unless-stopped
+      --appendonly yes
+      --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - financial-network
 
+  # =========================================================================
+  # Agent — FastAPI Backend
+  # =========================================================================
   agent:
-    image: pythonproject-base:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TARGET: agent
     container_name: financial-agent
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - OPENSEARCH_HOST=opensearch
+      - OPENSEARCH_PORT=9200
+      - OPENSEARCH_USER=admin
+      - OPENSEARCH_PASSWORD=admin
+      - OPENSEARCH_INDEX=rbi_reports
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
+      - USE_RERANKER=true
+      - USE_HYDE=true
+      - USE_CRAG=true
+      - USE_ROUTER=true
+      - RERANKER_MODEL=BAAI/bge-reranker-v2-m3
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
@@ -37,17 +87,25 @@ services:
       - ./api:/app/api
       - ./rag:/app/rag
       - ./eval:/app/eval
-      - ./mcp_server:/app/mcp_server
-      - ./ui:/app/ui
       - ./.env:/app/.env
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
     depends_on:
+      opensearch:
+        condition: service_started  # FIXED: Don't wait for healthcheck
       redis:
-        condition: service_healthy  # Wait for Redis to be ready
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - financial-network
 
+  # =========================================================================
+  # UI — Streamlit Frontend
+  # =========================================================================
   ui:
-    image: pythonproject-base:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TARGET: ui
     container_name: financial-ui
     ports:
       - "8501:8501"
@@ -55,13 +113,21 @@ services:
       - AGENT_API_URL=http://agent:8000
     volumes:
       - ./ui:/app/ui
-    command: streamlit run ui/app.py --server.port=8501 --server.address=0.0.0.0
     depends_on:
       - agent
     restart: unless-stopped
+    networks:
+      - financial-network
 
+  # =========================================================================
+  # MCP Server
+  # =========================================================================
   mcp:
-    image: pythonproject-base:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TARGET: mcp
     container_name: financial-mcp
     env_file:
       - .env
@@ -71,12 +137,22 @@ services:
       - ./mcp_server:/app/mcp_server
       - ./agent:/app/agent
       - ./rag:/app/rag
-      - ./.env:/app/.env
-    command: python -m mcp_server.run
     depends_on:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - financial-network
 
+# =============================================================================
+# VOLUMES & NETWORKS
+# =============================================================================
 volumes:
+  opensearch_data:
+    driver: local
   redis_data:
+    driver: local
+
+networks:
+  financial-network:
+    driver: bridge

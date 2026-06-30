@@ -1,46 +1,37 @@
+"""
+agent/tools/rag_search.py
+==========================
+OpenSearch-based RAG search tool for the agent.
+
+Replaces FAISS+BM25 with OpenSearch hybrid search.
+Keeps backward-compatible async/sync helper functions for the agent graph.
+"""
+
 import os
 import re
 import time
 import asyncio
+import hashlib
 from typing import Dict, Any, List
 
-# Pre-load RAG modules
-from rag.retriever import dual, load_faiss
-from rag.fusion import rrf
+from rag.retriever import SmartRetriever
+from rag.cache import CacheManager
 
-# === RAG CACHE ===
-import hashlib
+
+# =============================================================================
+# LOCAL CACHE (kept for fast in-memory hits before Redis)
+# =============================================================================
 _rag_local_cache: Dict[str, Any] = {}
 _MAX_RAG_CACHE = 50
 _RAG_CACHE_TTL = 600  # 10 minutes
 
 
-def _check_relevance(passages: list, query: str) -> bool:
-    """Check if retrieved passages are actually relevant to the query."""
-    query_words = set(re.findall(r'\w+', query.lower()))
-    # Keep only meaningful words (length > 3)
-    query_words = {w for w in query_words if len(w) > 3 and w not in {
-        "what", "when", "where", "which", "between", "from", "with", "have", "were",
-        "they", "them", "their", "there", "about", "this", "that", "than", "then"
-    }}
-    if not query_words:
-        return True  # too short to judge
-
-    relevant_count = 0
-    for p in passages[:3]:
-        text = p.get("text", "").lower()
-        matches = sum(1 for w in query_words if w in text)
-        if matches >= max(1, len(query_words) // 3):
-            relevant_count += 1
-
-    return relevant_count >= 1  # at least 1 of top 3 must be relevant
-
 def _rag_cache_key(query: str, year_filter: str | None) -> str:
     return hashlib.sha256(f"rag:{year_filter or 'all'}:{query.lower().strip()}".encode()).hexdigest()
 
+
 def _get_cached_rag(query: str, year_filter: str | None) -> list | None:
     key = _rag_cache_key(query, year_filter)
-    # Local cache
     if key in _rag_local_cache:
         entry = _rag_local_cache[key]
         if time.time() - entry.get("ts", 0) < _RAG_CACHE_TTL:
@@ -49,6 +40,7 @@ def _get_cached_rag(query: str, year_filter: str | None) -> list | None:
         del _rag_local_cache[key]
     return None
 
+
 def _set_cached_rag(query: str, year_filter: str | None, passages: list):
     key = _rag_cache_key(query, year_filter)
     _rag_local_cache[key] = {"passages": passages, "ts": time.time()}
@@ -56,42 +48,37 @@ def _set_cached_rag(query: str, year_filter: str | None, passages: list):
         oldest = next(iter(_rag_local_cache))
         del _rag_local_cache[oldest]
 
-# =============================================================================
-# CONFIG
-# =============================================================================
-USE_RERANKER = False
 
 # =============================================================================
-# PRE-LOAD
+# RELEVANCE CHECK (kept for agent guardrails)
 # =============================================================================
-print("[RAG Tool] Pre-loading FAISS index...")
-_faiss_loaded = False
+def _check_relevance(passages: list, query: str) -> bool:
+    """Check if retrieved passages are actually relevant to the query."""
+    query_words = set(re.findall(r'\w+', query.lower()))
+    query_words = {w for w in query_words if len(w) > 3 and w not in {
+        "what", "when", "where", "which", "between", "from", "with", "have", "were",
+        "they", "them", "their", "there", "about", "this", "that", "than", "then"
+    }}
+    if not query_words:
+        return True
 
-def _preload():
-    global _faiss_loaded
-    if not _faiss_loaded:
-        index_path = os.path.join("artifacts", "faiss_index", "index.faiss")
-        meta_path = os.path.join("artifacts", "faiss_index", "meta.pkl")
-        if os.path.exists(index_path) and os.path.exists(meta_path):
-            load_faiss(index_path, meta_path)
-            _faiss_loaded = True
-            print("[RAG Tool] ✅ FAISS pre-loaded")
-        else:
-            print(f"[RAG Tool] ⚠️ FAISS files not found")
+    relevant_count = 0
+    for p in passages[:3]:
+        text = p.get("text", "").lower()
+        matches = sum(1 for w in query_words if w in text)
+        if matches >= max(1, len(query_words) // 3):
+            relevant_count += 1
 
-    print("[RAG Tool] ⚡ Reranker DISABLED for fast CPU inference")
-
-_preload()
+    return relevant_count >= 1
 
 
 # =============================================================================
-# YEAR FILTERING LOGIC
+# YEAR FILTERING (kept for agent recency queries)
 # =============================================================================
 def _extract_year_from_doc(doc_id: str) -> str:
     """Extract year like '2024-25' from '2024-25.pdf' or '2024-25.pdf_77'"""
     if not doc_id:
         return ""
-    # FIXED: Match 20XX-YY where YY is exactly 2 digits
     match = re.search(r'20\d{2}[-]?\d{2}', str(doc_id))
     return match.group() if match else ""
 
@@ -104,23 +91,18 @@ def _sort_by_recency(passages: List[Dict], year_filter: str = None) -> List[Dict
     if not year_filter:
         return passages
 
-    # Extract year from each passage
     for p in passages:
         p["_year"] = _extract_year_from_doc(p.get("doc_id", ""))
 
     if year_filter == "latest":
-        # Sort by year descending (newest first)
         passages.sort(key=lambda x: x.get("_year", ""), reverse=True)
         newest_year = passages[0].get("_year", "") if passages else ""
         if newest_year:
             filtered = [p for p in passages if p.get("_year") == newest_year]
-            if len(filtered) >= 2:  # lowered threshold
-                print(f"[RAG] 'latest' → filtered to {len(filtered)} passages from {newest_year}")
-                return filtered
-        print(f"[RAG] 'latest' → not enough passages from {newest_year}, returning all")
-        return passages
+            # Return only the single most recent passage
+            return filtered[:1] if filtered else []
+        return []
     else:
-        # Specific year requested
         filtered = [p for p in passages if year_filter in p.get("_year", "")]
         if len(filtered) >= 1:
             print(f"[RAG] '{year_filter}' → filtered to {len(filtered)} passages")
@@ -130,91 +112,67 @@ def _sort_by_recency(passages: List[Dict], year_filter: str = None) -> List[Dict
 
 
 # =============================================================================
-# RETRIEVAL
+# SMART RETRIEVER (OpenSearch — loaded once)
+# =============================================================================
+_retriever: SmartRetriever = None
+
+
+def _get_retriever() -> SmartRetriever:
+    """Lazy-load SmartRetriever with config from environment."""
+    global _retriever
+    if _retriever is None:
+        from rag.config import RAGConfig
+        config = RAGConfig()
+        _retriever = SmartRetriever(
+            embedder_model=config.embedder_model,
+            reranker_model=config.reranker_model,
+        )
+        _retriever.warmup()
+        print("[RAG Tool] ✅ SmartRetriever ready (OpenSearch)")
+    return _retriever
+
+
+# =============================================================================
+# ASYNC RETRIEVAL (rewired to OpenSearch — used by agent graph nodes)
 # =============================================================================
 async def retrieve_passages_async(query: str, top_k: int = 5, year_filter: str = None) -> List[Dict[str, Any]]:
+    """
+    Async retrieval using OpenSearch hybrid search.
+    Used by agent graph nodes.
+    """
     cached = _get_cached_rag(query, year_filter)
     if cached:
         return cached[:top_k]
 
-    timings = {}
     t0 = time.time()
 
-    # 1. Hybrid retrieval
-    t1 = time.time()
-    try:
-        bm25_res, dense_res = await asyncio.to_thread(dual, query, k=top_k * 4)
-    except Exception as e:
-        print(f"[RAG] Hybrid failed ({e}), dense-only fallback...")
-        bm25_res = []
-        try:
-            from rag.retriever import dense_index, faiss_meta, embedder
-            import numpy as np
-            query_vec = embedder.encode(query, normalize_embeddings=True).astype("float32")
-            scores, indices = dense_index.search(np.expand_dims(query_vec, axis=0), top_k * 4)
-            dense_res = []
-            for rank, idx in enumerate(indices[0]):
-                if idx == -1:
-                    continue
-                meta = faiss_meta[idx]
-                dense_res.append({
-                    "chunk_id": meta.get("chunk_id", f"idx_{idx}"),
-                    "text": meta.get("text", ""),
-                    "score": float(scores[0][rank]),
-                    "doc_id": meta.get("doc_id", meta.get("source", "unknown")),
-                    "page": meta.get("page", 0),
-                })
-        except Exception as e2:
-            print(f"[RAG] Dense fallback failed: {e2}")
-            return []
+    retriever = _get_retriever()
+    result = retriever.retrieve(query, top_k=top_k, year_filter=year_filter)
 
-    timings["retrieval"] = round(time.time() - t1, 3)
-
-    if not bm25_res and not dense_res:
-        return []
-
-    # 2. RRF Fusion
-    t2 = time.time()
-    if bm25_res and dense_res:
-        bm25_rank = {d["chunk_id"]: i for i, d in enumerate(bm25_res)}
-        dense_rank = {d["chunk_id"]: i for i, d in enumerate(dense_res)}
-        fused = rrf([bm25_rank, dense_rank], k=60)
-        fused_ids = [doc_id for doc_id, _ in fused[:top_k * 4]]
-        doc_map = {d["chunk_id"]: d for d in bm25_res + dense_res}
-        docs = [doc_map[cid] for cid in fused_ids if cid in doc_map]
-    elif dense_res:
-        docs = dense_res[:top_k * 4]
-    else:
-        docs = bm25_res[:top_k * 4]
-    timings["fusion"] = round(time.time() - t2, 3)
-
+    docs = result.docs
     if not docs:
         return []
 
-    # 3. Format
+    # Format to match old interface
     passages = []
-    for d in docs[:top_k * 2]:  # keep more for filtering
+    for d in docs:
         passages.append({
             "chunk_id": d.get("chunk_id", "unknown"),
             "text": d.get("text", ""),
             "score": float(d.get("score", 0.0)),
             "doc_id": d.get("doc_id", d.get("source", "unknown")),
             "page": d.get("page", 0),
+            "year": d.get("year", ""),
         })
 
-    # 4. RECENCY FILTERING
-    t4 = time.time()
+    # Year filtering
     if year_filter:
         passages = _sort_by_recency(passages, year_filter)
-        timings["recency_filter"] = round(time.time() - t4, 3)
-    else:
-        timings["recency_filter"] = 0.0
 
-    # Take final top_k
     final_passages = passages[:top_k]
 
     total_time = round(time.time() - t0, 3)
-    print(f"[RAG Timing] Total: {total_time}s | Retrieval: {timings['retrieval']}s | Fusion: {timings['fusion']}s | Recency: {timings['recency_filter']}s")
+    print(f"[RAG Timing] Total: {total_time}s | Strategy: {result.strategy} | Cached: {result.cached}")
 
     _set_cached_rag(query, year_filter, final_passages)
     return final_passages
@@ -222,15 +180,13 @@ async def retrieve_passages_async(query: str, top_k: int = 5, year_filter: str =
 
 async def parallel_retrieve(queries: list, top_k: int = 5) -> list:
     """
-    Retrieve passages for multiple queries in parallel using asyncio.gather().
-    This cuts latency by ~40% when two independent retrievals are needed.
+    Retrieve passages for multiple queries in parallel.
+    Cuts latency when the planner needs multiple independent retrievals.
     """
     if not queries:
         return []
 
-    # Deduplicate while preserving order
     unique_queries = list(dict.fromkeys(queries))
-
     tasks = [retrieve_passages_async(q, top_k=top_k) for q in unique_queries]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -238,14 +194,19 @@ async def parallel_retrieve(queries: list, top_k: int = 5) -> list:
     for r in results:
         if isinstance(r, list):
             all_passages.extend(r)
-        # If r is an exception, skip it (graceful degradation)
+        # Exceptions skipped gracefully
 
     return all_passages
+
+
 def retrieve_passages(query: str, top_k: int = 5, year_filter: str = None) -> List[Dict[str, Any]]:
+    """
+    Synchronous wrapper for retrieve_passages_async.
+    Handles both running and non-running event loops.
+    """
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            # Running inside Uvicorn — schedule coroutine and block-wait
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 future = pool.submit(
@@ -259,15 +220,117 @@ def retrieve_passages(query: str, top_k: int = 5, year_filter: str = None) -> Li
         return asyncio.run(retrieve_passages_async(query, top_k, year_filter))
 
 
+# =============================================================================
+# MAIN RAG SEARCH TOOL (OpenSearch — used by agent planner)
+# =============================================================================
 class RagSearchTool:
+    """
+    RAG search tool for LangGraph agent.
+
+    Usage:
+        tool = RagSearchTool()
+        result = tool.run("What is the repo rate?", top_k=5)
+
+        if result["needs_fallback"]:
+            # Route to web_search
+            pass
+        else:
+            # Use result["text_summary"] as LLM context
+            pass
+    """
+
     name = "rag_search"
-    description = "Retrieve factual information from RBI financial reports using hybrid BM25+FAISS retrieval."
+    description = (
+        "Retrieve factual information from RBI financial reports using "
+        "OpenSearch hybrid retrieval (BM25 + kNN) with reranking, "
+        "query expansion, and self-evaluation."
+    )
+
+    def __init__(self):
+        self.retriever = _get_retriever()
 
     def run(self, query: str, top_k: int = 5, year_filter: str = None) -> Dict[str, Any]:
-        start = time.time()
-        passages = retrieve_passages(query, top_k=top_k, year_filter=year_filter)
+        """
+        Execute RAG search.
 
-        if not passages:
+        Returns:
+            {
+                "success": bool,
+                "retrieved_passages": List[Dict],
+                "confidence_score": float,
+                "text_summary": str,
+                "latency_sec": float,
+                "error": str | None,
+                "needs_fallback": bool,
+                "strategy": str,
+                "crag_confidence": float,
+                "crag_reason": str,
+                "cached": bool,
+                "timings": Dict,
+            }
+        """
+        start = time.time()
+
+        # Check local cache first
+        cached = _get_cached_rag(query, year_filter)
+        if cached:
+            passages = cached[:top_k]
+            is_relevant = _check_relevance(passages, query)
+
+            text_lines = []
+            for i, doc in enumerate(passages):
+                year = doc.get("year", "") or _extract_year_from_doc(doc.get("doc_id", ""))
+                page = doc.get("page", 0)
+                doc_id = doc.get("doc_id", "unknown")
+                doc_text = doc.get("text", "")[:400]
+                text_lines.append(
+                    f"[{i+1}] Source: {doc_id} (Year: {year}, Page {page})\n{doc_text}"
+                )
+
+            text = "\n\n".join(text_lines)
+            avg_score = sum(d.get("score", 0) for d in passages) / len(passages) if passages else 0
+
+            return {
+                "success": True,
+                "retrieved_passages": passages,
+                "confidence_score": min(avg_score, 1.0),
+                "text_summary": text,
+                "latency_sec": round(time.time() - start, 3),
+                "error": None,
+                "needs_fallback": not is_relevant,
+                "strategy": "cache_hit",
+                "crag_confidence": 1.0 if is_relevant else 0.5,
+                "crag_reason": "retrieved_from_local_cache",
+                "cached": True,
+                "timings": {"cache_lookup": round(time.time() - start, 3)},
+            }
+
+        try:
+            result = self.retriever.retrieve(
+                query=query,
+                top_k=top_k,
+                year_filter=year_filter,
+            )
+        except Exception as e:
+            print(f"[RAG Tool] SmartRetriever failed: {e}")
+            return {
+                "success": False,
+                "retrieved_passages": [],
+                "confidence_score": 0.0,
+                "error": f"Retrieval error: {str(e)}",
+                "latency_sec": round(time.time() - start, 3),
+                "text_summary": "[Retrieval system error]",
+                "needs_fallback": True,
+                "strategy": "error",
+                "crag_confidence": 0.0,
+                "crag_reason": "system_error",
+                "cached": False,
+                "timings": {},
+            }
+
+        docs = result.docs
+
+        if not docs:
             return {
                 "success": False,
                 "retrieved_passages": [],
@@ -276,22 +339,45 @@ class RagSearchTool:
                 "latency_sec": round(time.time() - start, 3),
                 "text_summary": "[No relevant documents found]",
                 "needs_fallback": True,
+                "strategy": result.strategy,
+                "crag_confidence": result.confidence,
+                "crag_reason": result.reason,
+                "cached": result.cached,
+                "timings": result.timings,
             }
 
-        # Check relevance
-        is_relevant = _check_relevance(passages, query)
+        # Build text summary for LLM context
+        text_lines = []
+        for i, doc in enumerate(docs):
+            year = doc.get("year", "")
+            page = doc.get("page", 0)
+            doc_id = doc.get("doc_id", "unknown")
+            doc_text = doc.get("text", "")[:400]
+            text_lines.append(
+                f"[{i+1}] Source: {doc_id} (Year: {year}, Page {page})\n{doc_text}"
+            )
 
-        text = "\n\n".join([
-                               f"[{i + 1}] Source: {p['doc_id']} (Year: {_extract_year_from_doc(p['doc_id'])}, Page {p['page']})\n{p['text'][:400]}"
-                               for i, p in enumerate(passages)])
-        avg_score = sum(p["score"] for p in passages) / len(passages) if passages else 0
+        text = "\n\n".join(text_lines)
+        avg_score = sum(d.get("score", 0) for d in docs) / len(docs) if docs else 0
+
+        # Cache successful results
+        _set_cached_rag(query, year_filter, docs)
 
         return {
             "success": True,
-            "retrieved_passages": passages,
+            "retrieved_passages": docs,
             "confidence_score": min(avg_score, 1.0),
             "text_summary": text,
             "latency_sec": round(time.time() - start, 3),
             "error": None,
-            "needs_fallback": not is_relevant,  # True if docs seem irrelevant
+            "needs_fallback": result.fallback_needed,
+            "strategy": result.strategy,
+            "crag_confidence": result.confidence,
+            "crag_reason": result.reason,
+            "cached": result.cached,
+            "timings": result.timings,
         }
+
+    def run_batch(self, queries: List[str], top_k: int = 5) -> List[Dict[str, Any]]:
+        """Run multiple queries in sequence."""
+        return [self.run(q, top_k=top_k) for q in queries]

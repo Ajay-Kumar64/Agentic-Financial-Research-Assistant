@@ -69,6 +69,12 @@ class FinancialCalculatorTool:
 
         if func_name == "growth_rate" and len(args) == 2:
             return ((args[1] - args[0]) / args[0]) * 100
+        elif func_name == "percent_change" and len(args) == 2:
+            # Alias for growth_rate — handles "percentage change from X to Y"
+            return ((args[1] - args[0]) / args[0]) * 100
+        elif func_name == "absolute_change" and len(args) == 2:
+            # Absolute difference — handles "how much did X increase"
+            return args[1] - args[0]
         elif func_name == "cagr" and len(args) == 3:
             return ((args[1] / args[0]) ** (1 / args[2]) - 1) * 100
         elif func_name == "ratio" and len(args) == 2:

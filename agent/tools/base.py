@@ -10,6 +10,12 @@ class ToolResult(BaseModel):
     error_message: str | None = None
     execution_time_ms: int
 
+    def __contains__(self, key: str) -> bool:
+        """Support 'in' operator for checking keys in result_data or error."""
+        if key == "error" and self.error_message is not None:
+            return True
+        return self.result_data is not None and key in self.result_data
+
 class BaseTool(abc.ABC):
     """
     Abstract Base Class that every tool must implement.

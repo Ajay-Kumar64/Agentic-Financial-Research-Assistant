@@ -147,6 +147,11 @@ class DocumentProcessor:
 
         return full_text, tables, metadata
 
+    def _extract_year_from_doc(self, doc_id: str) -> str | None:
+        """Extract fiscal year from document ID like 'rbi_2023-24.pdf'."""
+        match = re.search(r'20\d{2}[-]?\d{2}', str(doc_id))
+        return match.group() if match else None
+
     def _table_to_markdown(self, table: List[List]) -> str:
         """Convert raw table to markdown format."""
         if not table or len(table) < 2:

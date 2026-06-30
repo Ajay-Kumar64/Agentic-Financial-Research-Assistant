@@ -1,0 +1,85 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "knn": true,
+      "knn.algo_param.ef_search": 100,
+      "similarity": {
+        "default": {
+          "type": "BM25",
+          "k1": 1.2,
+          "b": 0.75
+        }
+      },
+      "refresh_interval": "1s"
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "text": {
+        "type": "text",
+        "analyzer": "standard",
+        "fields": {
+          "keyword": {
+            "type": "keyword"
+          },
+          "english": {
+            "type": "text",
+            "analyzer": "english"
+          }
+        }
+      },
+      "text_embedding": {
+        "type": "knn_vector",
+        "dimension": 768,
+        "method": {
+          "name": "hnsw",
+          "space_type": "cosinesimil",
+          "engine": "lucene",
+          "parameters": {
+            "ef_construction": 128,
+            "m": 16
+          }
+        }
+      },
+      "chunk_id": {
+        "type": "keyword"
+      },
+      "doc_id": {
+        "type": "keyword"
+      },
+      "parent_id": {
+        "type": "keyword"
+      },
+      "type": {
+        "type": "keyword"
+      },
+      "page": {
+        "type": "integer"
+      },
+      "year": {
+        "type": "keyword"
+      },
+      "source": {
+        "type": "keyword"
+      },
+      "metric_type": {
+        "type": "keyword"
+      },
+      "metric_value": {
+        "type": "float"
+      },
+      "structured": {
+        "type": "boolean"
+      },
+      "context_prefix": {
+        "type": "text"
+      },
+      "indexed_at": {
+        "type": "date"
+      }
+    }
+  }
+}

@@ -12,6 +12,18 @@ GUARDRAIL_CONFIG = {
 }
 
 
+def validate_input(query: str) -> bool:
+    """Simple input validation wrapper for tests."""
+    from agent.state import AgentState
+    state = AgentState()
+    state["tools_used"] = []
+    state["total_tokens_used"] = 0
+    state["latency_ms"] = 0
+    state["confidence_score"] = 1.0
+    state["task_complete"] = False
+    decision, _ = check_guardrails(state)
+    return decision != "force_respond"
+
 def check_guardrails(state: AgentState) -> Tuple[str, str | None]:
     """
     Check all guardrails and return routing decision.

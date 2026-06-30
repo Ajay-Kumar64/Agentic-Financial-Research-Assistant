@@ -119,7 +119,7 @@ try:
         set_cached_response,
         get_store_metrics,
         _redis_available,
-        _redis_client,
+
     )
 
     print("  ✅ Module imports successfully")
@@ -132,7 +132,7 @@ try:
 
     # Check internal state
     print(f"  📊 Internal _redis_available: {_redis_available}")
-    print(f"  📊 Internal _redis_client: {'SET' if _redis_client else 'None'}")
+
 
 except Exception as e:
     print(f"  ❌ Module import/execution FAILED")

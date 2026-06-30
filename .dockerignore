@@ -25,7 +25,7 @@ __pycache__
 logs/
 data/
 artifacts/
-
+embeddings/
 # Tests
 tests/
 Checking_test/
@@ -33,6 +33,7 @@ Checking_test/
 # Documentation
 *.md
 README*
+RAG_IMPROVEMENT_GUIDE.md
 
 # Docker files themselves
 Dockerfile
@@ -41,3 +42,6 @@ docker-compose.yml
 
 # Local environment
 .env.example
+
+.coverage
+
