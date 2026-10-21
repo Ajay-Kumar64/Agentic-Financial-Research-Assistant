@@ -54,7 +54,7 @@ graph LR
     Final --> End
 ```
 
-**11-node LangGraph** with conditional edges. Every tool execution routes through a guardrail checkpoint before returning to the planner.
+**12-node LangGraph** with conditional edges. Every tool execution routes through a guardrail checkpoint before returning to the planner.
 
 ---
 
@@ -251,7 +251,7 @@ make eval-ragas  # RAGAS evaluation
 ```
 agentic-financial-assistant/
 ├── agent/
-│   ├── graph.py                 # 11-node LangGraph state machine (async-ready)
+│   ├── graph.py                 # 12-node LangGraph state machine (async-ready)
 │   ├── state.py                 # AgentState TypedDict
 │   ├── planner_node.py          # Planner with 9 fast-paths + LLM fallback
 │   ├── guardrails.py            # Loop, depth, token, latency, confidence checks
